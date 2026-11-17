@@ -1,0 +1,22 @@
+{
+  "name": "relay-mail-dashboard",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "start": "node server.mjs",
+    "test": "node --test src/domain.test.mjs",
+    "pages:build": "wrangler pages functions build functions --outdir .worker-build --compatibility-date 2026-11-16 --compatibility-flag nodejs_compat",
+    "pages:dev": "wrangler pages dev ./public",
+    "pages:deploy": "wrangler pages deploy ./public --project-name=relay-mail-dashboard",
+    "d1:migrate:local": "wrangler d1 migrations apply relay-mail-dashboard --local",
+    "d1:migrate:remote": "wrangler d1 migrations apply relay-mail-dashboard --remote"
+  },
+  "engines": { "node": ">=22" },
+  "dependencies": {
+    "imapflow": "^2.12.1",
+    "mailparser": "^3.14.5",
+    "nodemailer": "^10.6.0"
+  },
+  "devDependencies": { "wrangler": "^4.163.0" }
+}

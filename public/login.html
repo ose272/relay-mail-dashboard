@@ -1,0 +1,24 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark">
+  <title>Sign in · MyMail</title>
+  <link rel="stylesheet" href="/styles.css">
+  <script src="/login.js" defer></script>
+</head>
+<body>
+  <main class="login-shell">
+    <form id="login-form" class="panel login-panel">
+      <div class="brand-mark">◯</div>
+      <h1>Sign in to MyMail</h1>
+      <p class="muted">Private access to your email workspace.</p>
+      <label for="password">Dashboard password</label>
+      <input id="password" type="password" autocomplete="current-password" required>
+      <p id="login-error" class="error" role="alert"></p>
+      <button class="primary" type="submit">Sign in</button>
+    </form>
+  </main>
+</body>
+</html>

@@ -1,0 +1,15 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "relay-mail-dashboard",
+  "compatibility_date": "2026-11-16",
+  "compatibility_flags": ["nodejs_compat"],
+  "pages_build_output_dir": "./public",
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "REPLACE_WITH_NEW_D1_DATABASE_NAME",
+      "database_id": "REPLACE_WITH_NEW_D1_DATABASE_ID",
+      "migrations_dir": "migrations"
+    }
+  ]
+}

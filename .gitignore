@@ -1,0 +1,16 @@
+app password
+app password.txt
+CODEX_HANDOFF_PROMPT.md
+FIGMA_EXPORT.md
+.env
+.env.*
+data/
+node_modules/
+.wrangler/
+.worker-build/
+_worker.bundle
+.dev.vars
+.dev.vars.*
+wrangler.production.jsonc
+wrangler.scheduler.production.jsonc
+*.log
