@@ -81,7 +81,7 @@ const server=http.createServer(async(req,res)=>{
     }await save();return json(200,result);
    };mutation=mutation.then(run,run);await mutation;return;
   }
-  const files={'/':'index.html','/app.js':'app.js','/styles.css':'styles.css'};const f=files[url.pathname];if(!f){res.writeHead(404);return res.end('Not found');}
+  const files={'/':'index.html','/app.js':'app.js','/styles.css':'styles.css','/sending.css':'sending.css','/sending-view.js':'sending-view.js'};const f=files[url.pathname];if(!f){res.writeHead(404);return res.end('Not found');}
   res.writeHead(200,{'Content-Type':f.endsWith('.css')?'text/css':f.endsWith('.js')?'text/javascript':'text/html','Content-Security-Policy':"default-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self'; frame-ancestors 'none'",'X-Content-Type-Options':'nosniff'});res.end(await readFile(resolve(root,'public',f)));
  }catch(e){json(400,{error:e.message});}
 });

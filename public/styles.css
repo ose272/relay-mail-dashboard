@@ -120,40 +120,4 @@ dialog label{color:#52617b}
 .uncertain-list small{color:#71809a}
 .login-panel .brand-mark{background:#1049bd}
 .login-panel label{color:#52617b}
-.sending-page{display:grid;gap:20px}
-.send-notice{display:flex;align-items:center;gap:16px;padding:18px 24px;border:1px solid #dce7fb;border-radius:14px;background:#f0f5ff}
-.send-notice.attention{background:#edf3ff}
-.send-notice-icon{display:grid;place-items:center;flex:0 0 34px;height:34px;border-radius:50%;background:#fff;color:#1049bd;border:1px solid #cbdcff;font-weight:700}
-.send-notice>div:nth-child(2){min-width:0;flex:1}
-.send-notice strong{color:#273653;font-size:14px}
-.send-notice p{margin:5px 0 0;color:#70809c;font-size:12px;line-height:1.55}
-.send-notice .actions{flex-wrap:wrap}
-.send-stats{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:16px}
-.send-stat{position:relative;min-height:126px;padding:20px 22px;border:1px solid #e2e8f1;border-radius:16px;background:#fff}
-.send-stat-label{display:flex;align-items:center;justify-content:space-between;color:#71809a;font-size:11px;font-weight:600;letter-spacing:.04em;text-transform:uppercase}
-.send-stat-label span{display:grid;place-items:center;width:42px;height:42px;border-radius:13px;background:#eef3ff;color:#1049bd;font-size:20px}
-.send-stat>strong{display:block;margin:8px 0 4px;color:#1d2944;font-size:34px;font-weight:650;letter-spacing:-1px}
-.send-stat>small{color:#77849a;font-size:11px}
-.sending-run-panel{overflow:hidden}
-.sending-run-header{display:flex;align-items:center;gap:15px;min-height:78px;padding:17px 24px;border-bottom:1px solid #e7ebf2}
-.sending-run-icon{display:grid;place-items:center;flex:0 0 44px;height:44px;border-radius:13px;background:#edf3ff;color:#1049bd;font-size:21px}
-.sending-run-title{min-width:0;flex:1}
-.sending-run-title h2{color:#24314d;font-size:16px}
-.sending-run-title p{margin:4px 0 0;color:#77849a;font-size:11px}
-.sending-run-header>.badge{white-space:nowrap}
-.send-progress-embedded{margin:0;padding:22px 34px;border:0;border-bottom:1px solid #e7ebf2;border-radius:0;background:#fff}
-.send-progress-embedded .send-progress-top strong{color:#6b7890;font-size:11px;text-transform:uppercase;letter-spacing:.03em}
-.send-progress-embedded .send-progress-top>div>span{color:#75839a}
-.send-progress-embedded progress{height:8px}
-.send-activity{padding:20px 24px 4px}
-.send-activity-header{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:14px}
-.send-activity-header h3{margin:0;color:#27334e;font-size:14px}
-.send-activity-header p{margin:4px 0 0;color:#8490a4;font-size:10px}
-.send-runs-table{min-width:850px}
-.send-runs-table th{padding-top:12px;padding-bottom:12px}
-.send-runs-table td,.send-runs-table th{padding-left:16px;padding-right:16px}
-.send-runs-table td{font-size:11px}
-.send-runs-table .actions{flex-wrap:nowrap}
-.sending-footnote{margin:0;padding:12px 24px 18px;color:#8390a4;font-size:10px}
-@media(max-width:1100px){.send-stats{grid-template-columns:repeat(2,minmax(0,1fr))}.send-notice{align-items:flex-start}.send-runs-table{min-width:760px}}
-@media(max-width:800px){.sidebar{width:100%;background:#fff}.nav.active{background:#edf3ff}.topbar{height:66px;background:#fff}.content{padding:22px 15px}.send-stats{grid-template-columns:repeat(2,minmax(0,1fr));gap:10px}.send-stat{min-height:112px;padding:15px}.send-stat>strong{font-size:29px}.send-stat-label span{width:34px;height:34px}.send-notice{flex-wrap:wrap;padding:16px}.send-notice>div:nth-child(2){flex:1 1 calc(100% - 55px)}.send-notice>.actions{width:100%;margin-left:50px}.sending-run-header{padding:14px;gap:9px;flex-wrap:wrap}.sending-run-title{flex-basis:calc(100% - 60px)}.sending-run-header>.badge{margin-left:53px}.sending-run-header>.actions{margin-left:auto}.send-progress-embedded{padding:18px 15px}.send-activity{padding:18px 14px 4px}.send-activity-header{align-items:flex-start}.sending-footnote{padding:10px 14px 15px}.mail-folders{background:#fff}.thread,.thread:nth-child(odd){background:#fff}.thread.selected{background:#eef4ff}.mail-panel{background:#fff}}
+@media(max-width:800px){.sidebar{width:100%;background:#fff}.nav.active{background:#edf3ff}.topbar{height:66px;background:#fff}.content{padding:22px 15px}.mail-folders{background:#fff}.thread,.thread:nth-child(odd){background:#fff}.thread.selected{background:#eef4ff}.mail-panel{background:#fff}}
