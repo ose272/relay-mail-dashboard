@@ -2,6 +2,7 @@ app password
 app password.txt
 CODEX_HANDOFF_PROMPT.md
 FIGMA_EXPORT.md
+design/figma-source/
 .env
 .env.*
 data/
