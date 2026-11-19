@@ -27,7 +27,7 @@ all 74 accounts per email. `sender_budget` stores used quota, effective cap and
 the earliest possible rolling expiry. Database triggers reserve a slot atomically
 and advance the sender's queue cursor. Concurrent requests cannot reuse a delivery
 or send two messages from the same account. Campaign in-flight count is maintained
-atomically and limited to 10.
+atomically and limited to 50.
 
 Normal sending does not recount sender history. History is reconciled through a
 bounded indexed query when the cached expiry arrives. This preserves a rolling
@@ -102,3 +102,7 @@ credential files, secret values or production database exports belong in Git.
 
 
 Paid-plan deployment: set the non-secret Pages variable APP_USAGE_TIER=paid after upgrading. Application daily guards become 500 million reads and 1 million writes; defaults retain Free guards. These cover this API only and are not a Cloudflare billing cap. Migrations 0026 and 0027 were applied after the November 19 upgrade.
+
+Sending now supports 50 concurrent distinct accounts, with a 750-result scheduler batch and at most 1,500 attempts including contention. Per-account exclusion, rolling 40-send caps, manual-only reply checks, and stop-on-uncertain behavior remain enforced. Batch throughput depends on available quota and provider latency.
+
+Visible Sending-page counters refresh every 2 seconds during Sending (15 seconds while Scheduled). Poll requests do not overlap and pause when hidden; activity remains throttled to 30 seconds. Summaries read stored campaign counters, including in-flight accounts and the next scheduled time; they do not scan delivery history or check inboxes.

@@ -199,7 +199,7 @@ export const SendingPage: React.FC<SendingPageProps> = ({
             {!sendingState.id ? <StatusBadge label="NO CAMPAIGN" tone="neutral" /> : sendingState.status === 'completed' ? <StatusBadge label="COMPLETE" tone="success" /> : sendingState.status === 'paused' ? (
               <StatusBadge label="PAUSED" tone="warning" icon="pause" size="md" />
             ) : (
-              <StatusBadge label="RUNNING" tone="success" icon="check" size="md" />
+              <StatusBadge label={sendingState.backendStatus==='Scheduled'?'SCHEDULED':'RUNNING'} tone="success" icon="check" size="md" />
             )}
 
             {sendingState.id && <PortfolioPillButton
@@ -227,13 +227,15 @@ export const SendingPage: React.FC<SendingPageProps> = ({
                 {sendingState.sentCount} sent of {sendingState.plannedTotal} planned ({progressPct}%)
               </span>
             </div>
-            <div className="w-full h-2 rounded-full bg-[var(--color-subtle)] overflow-hidden">
+            <div role="progressbar" aria-label="Confirmed delivery progress" aria-valuemin={0} aria-valuemax={sendingState.plannedTotal || 1} aria-valuenow={sendingState.sentCount} className="w-full h-2 rounded-full bg-[var(--color-subtle)] overflow-hidden">
               <div
-                className="h-full rounded-full bg-[var(--color-brand)] transition-all duration-300"
+                className="h-full rounded-full bg-[var(--color-brand)] transition-[width] duration-1000 ease-out motion-reduce:transition-none"
                 style={{ width: `${progressPct}%` }}
               />
             </div>
           </div>
+
+          {sendingState.id && <p role="status" className="text-[12px] text-[var(--color-muted)] tabular-nums">{sendingState.status==='running' ? sendingState.inFlight ? `${sendingState.inFlight} accounts sending now · ` : sendingState.backendStatus==='Scheduled' && sendingState.nextSendAt ? `Scheduled for ${new Date(sendingState.nextSendAt).toLocaleString('en-GB',{timeZone:'Africa/Lagos'})} Lagos time · ` : 'Waiting for the next background batch · ' : ''}{sendingState.updatedAt ? `Updated ${new Date(sendingState.updatedAt).toLocaleTimeString('en-GB',{timeZone:'Africa/Lagos'})} · ` : ''}Confirmed deliveries only{sendingState.status==='running' && sendingState.backendStatus==='Sending' ? ' · Live counters refresh every 2 seconds' : ''}</p>}
 
           {/* Activity Table Header Controls */}
           <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">

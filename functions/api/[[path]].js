@@ -396,14 +396,14 @@ async function loadState(db, options = {}) {
   };
 }
 
-async function loadSendingStatus(db) {
+async function loadSendingStatus(db, summary = false) {
   const result = await db.prepare(`
     SELECT id, status, created_at, planned_sends, sent_count, pending_count,
-      uncertain_count, failed_count, failure_codes
+      uncertain_count, failed_count, failure_codes, in_flight_count, next_send_at
     FROM campaigns
     WHERE name = 'Direct send'
     ORDER BY created_at DESC
-    LIMIT 10
+    LIMIT ${summary ? 1 : 10}
   `).all();
   return resultRows(result).map(run => ({
     id: run.id,
@@ -414,6 +414,8 @@ async function loadSendingStatus(db) {
     pending: Number(run.pending_count || 0),
     uncertain: Number(run.uncertain_count || 0),
     failed: Number(run.failed_count || 0),
+    inFlight: Number(run.in_flight_count || 0),
+    nextSendAt: run.next_send_at,
     failureCodes: String(run.failure_codes || '').split(',').filter(Boolean),
     liveReady: true
   }));
@@ -1816,7 +1818,7 @@ async function handleRequest({ request, env }) {
       return jsonResponse(200, { thread });
     }
     if (request.method === 'GET' && path === '/api/sending/status') {
-      const runs = await loadSendingStatus(env.DB);
+      const runs = await loadSendingStatus(env.DB, url.searchParams.get('summary') === '1');
       let deliveries = [];
       if (runs[0] && url.searchParams.get('summary') !== '1') {
         // Bounded activity queries use the campaign/status index. Include review

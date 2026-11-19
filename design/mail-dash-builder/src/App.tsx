@@ -54,14 +54,14 @@ export default function App() {
  useEffect(()=>{document.documentElement.classList.toggle('dark',theme==='dark');localStorage.setItem('relay-theme',theme);},[theme]);
  useEffect(()=>{
   if(!loaded || unauthorized || usageBlocked || !['sending','dashboard'].includes(activePage))return;
-  let stopped=false;
-  const poll=async(initial=false)=>{if(document.hidden || mutationLock.current)return;try{
+  let stopped=false, polling=false;
+  const poll=async(initial=false)=>{if(document.hidden || mutationLock.current || polling)return;polling=true;try{
     const activity=activePage==='sending' && (initial || (sendingState.backendStatus==='Sending' && Date.now()-lastActivityAt.current>=30000));
     await refreshSending(activity);
-  }catch(e){if(!stopped)report(e);}};
+  }catch(e){if(!stopped)report(e);}finally{polling=false;}};
   void poll(true);
   if(activePage!=='sending' || sendingState.status!=='running')return()=>{stopped=true;};
-  const timer=setInterval(()=>void poll(),sendingState.backendStatus==='Scheduled'?60000:10000);
+  const timer=setInterval(()=>void poll(),sendingState.backendStatus==='Scheduled'?15000:2000);
   return()=>{stopped=true;clearInterval(timer);};
  },[loaded,unauthorized,usageBlocked,activePage,sendingState.status,sendingState.backendStatus,refreshSending,report]);
  useEffect(()=>{const timer=setInterval(()=>setThreads(prev=>prev.filter(t=>t.inboundDay===lagosDay(new Date().toISOString()))),60000);return()=>clearInterval(timer);},[]);

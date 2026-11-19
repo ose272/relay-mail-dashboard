@@ -25,6 +25,9 @@ export interface DeliveryRecord {
 export interface SendingState {
   id?: string;
   backendStatus?: string;
+  inFlight?: number;
+  nextSendAt?: string;
+  updatedAt?: number;
   status: 'paused' | 'running' | 'completed';
   runTitle: string;
   runSubtitle: string;

@@ -53,8 +53,9 @@ test('usage safety guard holds sending before the application read/write allowan
 test('summary-only sending polls do not load delivery activity',async()=>{
  const db=createTestDb();try{
  db.sqlite.exec("INSERT INTO templates(id,name,subject,body,created_at) VALUES('p','Plan','','Body','2026-01-01');INSERT INTO campaigns(id,name,template_id,status,created_at,allocation_json) VALUES('c','Direct send','p','Sending','2026-01-01','[]')");
+ db.sqlite.exec("UPDATE campaigns SET in_flight_count=7,next_send_at='2026-11-20T09:00:00.000Z' WHERE id='c'");
  const queries=[],prepare=db.prepare;db.prepare=sql=>{queries.push(sql);return prepare(sql);};
- const result=await call(db,'sending/status?summary=1');assert.equal(result.status,200);assert.deepEqual(result.data.deliveries,[]);assert.equal(result.data.runs.length,1);assert.ok(!queries.some(sql=>sql.includes('d.started_at, d.sent_at')));
+ const result=await call(db,'sending/status?summary=1');assert.equal(result.status,200);assert.deepEqual(result.data.deliveries,[]);assert.equal(result.data.runs.length,1);assert.equal(result.data.runs[0].inFlight,7);assert.equal(result.data.runs[0].nextSendAt,'2026-11-20T09:00:00.000Z');assert.ok(!queries.some(sql=>sql.includes('d.started_at, d.sent_at')));
  queries.length=0;await call(db,'sending/status');assert.ok(queries.some(sql=>sql.includes('d.started_at, d.sent_at')));
  const day=new Date().toISOString().slice(0,10);assert.ok(db.sqlite.prepare('SELECT rows_written FROM app_usage_days WHERE day=?').get(day).rows_written>=3);
 }finally{db.sqlite.close();}});

@@ -163,7 +163,7 @@ test('body-only campaign messages omit the subject header',()=>{
  assert.equal(Object.hasOwn(bodyOnly,'subject'),false);
  assert.equal(createCampaignMessageOptions({...common,subject:'A quick note'}).subject,'A quick note');
 });
-test('scheduled sender processes at most 150 messages with ten concurrent requests per tick',async()=>{
+test('scheduled sender processes at most 750 messages with fifty concurrent requests per tick',async()=>{
  const originalFetch=globalThis.fetch;
  let calls=0,active=0,maximumActive=0;
  globalThis.fetch=async()=>{
@@ -177,8 +177,8 @@ test('scheduled sender processes at most 150 messages with ten concurrent reques
    DASHBOARD_API_URL:'https://dashboard.example',
    BACKGROUND_CRON_SECRET:'test-only-secret'
   });
-  assert.equal(calls,150);
-  assert.equal(maximumActive,10);
+  assert.equal(calls,750);
+  assert.equal(maximumActive,50);
  }finally{
   globalThis.fetch=originalFetch;
  }
@@ -318,7 +318,7 @@ test('scheduler bounds contention retries and never retries an unconfirmed reque
  const originalFetch=globalThis.fetch;let calls=0;
  try{
  globalThis.fetch=async()=>{calls++;return new Response(JSON.stringify({busy:true}),{headers:{'Content-Type':'application/json'}});};
- await scheduledSender.scheduled({},{DASHBOARD_API_URL:'https://dashboard.example',BACKGROUND_CRON_SECRET:'local-only'});assert.equal(calls,300);
- calls=0;globalThis.fetch=async()=>{calls++;throw new Error('No confirmation');};await scheduledSender.scheduled({},{DASHBOARD_API_URL:'https://dashboard.example',BACKGROUND_CRON_SECRET:'local-only'});assert.ok(calls<=10);
+ await scheduledSender.scheduled({},{DASHBOARD_API_URL:'https://dashboard.example',BACKGROUND_CRON_SECRET:'local-only'});assert.equal(calls,1500);
+ calls=0;globalThis.fetch=async()=>{calls++;throw new Error('No confirmation');};await scheduledSender.scheduled({},{DASHBOARD_API_URL:'https://dashboard.example',BACKGROUND_CRON_SECRET:'local-only'});assert.ok(calls<=50);
  }finally{globalThis.fetch=originalFetch;}
 });
