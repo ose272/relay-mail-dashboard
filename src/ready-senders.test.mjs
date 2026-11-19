@@ -17,3 +17,8 @@ test('cache migration backfills existing active quota and in-flight sends withou
  s.exec(readFileSync(new URL('../migrations/0026_cached_sender_budget.sql',import.meta.url),'utf8'));assert.equal(s.prepare("SELECT used_count FROM sender_budget WHERE account_id='a'").get().used_count,2);assert.equal(s.prepare("SELECT in_flight_count FROM campaigns WHERE id='c'").get().in_flight_count,1);const ready=s.prepare("SELECT * FROM sender_ready WHERE campaign_id='c'").get();assert.equal(ready.next_delivery_id,'d2');assert.equal(ready.busy,1);assert.equal(ready.enabled,0);
  }finally{s.close();}
 });
+
+
+test('provider cooldown persists across queue refreshes and cap edits while other accounts remain ready',async()=>{
+ const f=fixture(2,2);try{await seedSenderQueue(f.db,'c');const retry=new Date(Date.now()+300000).toISOString();f.s.prepare("UPDATE accounts SET send_retry_after=? WHERE id='a0'").run(retry);f.s.exec("UPDATE accounts SET cap=20 WHERE id='a0'");await seedSenderQueue(f.db,'c');const picked=await f.choose();assert.match(picked.id,/^a1/);const blocked=f.s.prepare("SELECT next_delivery_id,ready_at FROM sender_ready WHERE account_id='a0'").get();assert.equal(blocked.ready_at,retry);assert.equal(f.claim(blocked.next_delivery_id),0);}finally{f.s.close();}
+});

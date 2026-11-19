@@ -322,3 +322,11 @@ test('scheduler bounds contention retries and never retries an unconfirmed reque
  calls=0;globalThis.fetch=async()=>{calls++;throw new Error('No confirmation');};await scheduledSender.scheduled({},{DASHBOARD_API_URL:'https://dashboard.example',BACKGROUND_CRON_SECRET:'local-only'});assert.ok(calls<=50);
  }finally{globalThis.fetch=originalFetch;}
 });
+
+
+test('scheduler continues definite deferrals but stops on an embedded streamed error',async()=>{
+ const originalFetch=globalThis.fetch;let calls=0;
+ try{globalThis.fetch=async()=>{calls++;return new Response(JSON.stringify({deferred:true,httpStatus:200}));};await scheduledSender.scheduled({},{DASHBOARD_API_URL:'https://dashboard.example',BACKGROUND_CRON_SECRET:'local-only'});assert.equal(calls,750);
+ calls=0;globalThis.fetch=async()=>{calls++;return new Response(JSON.stringify({error:'Held',httpStatus:503}));};await scheduledSender.scheduled({},{DASHBOARD_API_URL:'https://dashboard.example',BACKGROUND_CRON_SECRET:'local-only'});assert.ok(calls<=50);
+ }finally{globalThis.fetch=originalFetch;}
+});

@@ -24,6 +24,8 @@ export default function App() {
  const [leadTotal,setLeadTotal]=useState(0), [campaignCount,setCampaignCount]=useState(0),[leadPage,setLeadPage]=useState<any>({});
  const [importProgress,setImportProgress]=useState<ImportProgress|null>(null);
  const [usageBlocked,setUsageBlocked]=useState(false);
+ const [notice,setNotice]=useState('');
+ const [accountAlerts,setAccountAlerts]=useState<any[]>([]);
  const lastActivityAt=useRef(0);
  const [loaded,setLoaded]=useState(false), [error,setError]=useState(''), [unauthorized,setUnauthorized]=useState(false), [busy,setBusy]=useState(false);
  const selectedThreadRef=useRef('');
@@ -32,6 +34,7 @@ export default function App() {
  const refresh=useCallback(async(cursor='')=>{
   const data=await api('state?leadScope=active&leadCursor='+encodeURIComponent(cursor));
   rawAccounts.current=data.accounts || [];
+  setAccountAlerts((data.healthEvents || []).filter((e:any)=>!e.resolvedAt).slice(0,10));
   setAccounts(rawAccounts.current.map(mapAccount)); setThreads((data.threads || []).map((t:any)=>mapThread(t,rawAccounts.current)));
   setLeads((data.leads || []).map(mapLead)); setLeadTotal(Number(data.leadCounts?.active || 0)); setLeadPage(data.leadPage || {});
   setLeadBatches((data.leadImportBatches || []).map((b:any)=>({id:b.id,name:b.fileName,sourceLabel:`${b.importedCount} imported · ${b.duplicateCount} duplicates · ${b.invalidCount} invalid`,leadCount:Number(b.leadCount),planName:'Automatic allocation',importedAt:b.createdAt})));
@@ -48,6 +51,7 @@ export default function App() {
  const refreshSending=useCallback(async(activity=true)=>{
   const data=await api(activity?'sending/status':'sending/status?summary=1');
   if(activity)lastActivityAt.current=Date.now();
+  if(data.accountAlerts)setAccountAlerts(data.accountAlerts);
   setSendingState(prev=>{const next=mapSending(data.runs?.[0],data.deliveries || []);return activity?next:{...next,records:prev.id===next.id?prev.records:[]};});
  },[]);
  useEffect(()=>{refresh().catch(report);},[refresh,report]);
@@ -99,7 +103,7 @@ export default function App() {
  const handleRunDnsCheck=(id:string)=>action(()=>api('account/health/check',{accountId:id,force:true,suppressNotification:true}));
  const saveSettings=(next:WorkspaceSettings)=>action(()=>api('settings',{cap:next.dailyWorkspaceCap,workspaceName:next.workspaceName,healthNotificationEmail:next.healthNotificationEmail || ''}));
  const nextLeadPage=()=>refresh(leadPage.nextCursor).catch(report);
- const syncMail=async()=>{if(mutationLock.current)return;mutationLock.current=true;setBusy(true);setError('');try{let issues:string[]=[];for(let i=0;i<rawAccounts.current.length;i+=3){await Promise.all(rawAccounts.current.slice(i,i+3).filter(a=>a.hasCredentials).map(async a=>{try{const result=await api('mail/sync',{accountId:a.id,manual:true});if(result.errors?.length)issues.push(...result.errors);}catch(e){issues.push(a.email+': '+(e as Error).message);}}));}await refresh();if(issues.length)setError(issues.join('; '));}catch(e){report(e);}finally{mutationLock.current=false;setBusy(false);}};
+ const syncMail=async()=>{if(mutationLock.current)return;mutationLock.current=true;setBusy(true);setError('');const targets=rawAccounts.current.filter(a=>a.hasCredentials);let completed=0,bounces=0,more=0;setNotice('Checking replies and bounce reports…');try{let issues:string[]=[];for(let i=0;i<targets.length;i+=3){await Promise.all(targets.slice(i,i+3).map(async a=>{try{const result=await api('mail/sync',{accountId:a.id,manual:true});bounces+=Number(result.bounces || 0);if(result.more)more++;issues.push(...[result.inboxError,result.sentError,result.bounceError].filter(Boolean).map(e=>a.email+': '+e));}catch(e){issues.push(a.email+': '+(e as Error).message);}finally{completed++;setNotice(`Checking mail: ${completed}/${targets.length} accounts · ${bounces} bounces recorded`);}}));}await refresh();await refreshSending();setNotice(`Manual sync finished: ${completed} accounts checked · ${bounces} new bounced deliveries recorded.${more?' More messages remain; click Sync again to continue.':''}`);if(issues.length)setError(issues.join('; '));}catch(e){report(e);}finally{mutationLock.current=false;setBusy(false);}};
 
   const unreadInboxCount = threads.filter((t) => t.unread && !t.archived).length;
   const flaggedSendingCount =
@@ -137,6 +141,8 @@ export default function App() {
 
         <main aria-busy={busy} className="flex-1 px-5 sm:px-10 pt-8 pb-6 max-w-[1260px] w-full mx-auto">
           {error && <div role="alert" className="mb-5 p-4 rounded-[14px] border border-red-400 text-[var(--color-danger)]">{error}<button className="ml-4 underline" onClick={() => {setError('');setUsageBlocked(false);refresh().catch(report);}}>Retry</button>{unauthorized && <a className="ml-4 underline" href="/login">Sign in</a>}</div>}
+          {accountAlerts.length>0 && <div role="alert" className="mb-5 p-4 rounded-[14px] border border-amber-400 bg-[var(--color-surface)] text-[13px]"><strong>Sender accounts need attention</strong>{accountAlerts.slice(0,3).map(a=><p key={a.id} className="mt-2 break-words">{a.accountEmail} · {a.status}: {a.message}</p>)}<button className="mt-3 underline" onClick={()=>{setActivePage('accounts');refresh().catch(report);}}>Review accounts</button></div>}
+          {notice && <div role="status" className="mb-5 p-4 rounded-[14px] border border-[var(--color-border)] text-[13px]">{notice}{!busy && <button className="ml-3 underline" onClick={()=>setNotice('')}>Dismiss</button>}</div>}
           {!loaded && !error && <p role="status">Loading your workspace…</p>}
           {importProgress && <div role="status" className="mb-5 p-4 rounded-[14px] border border-[var(--color-border)] bg-[var(--color-surface)]"><div className="flex justify-between gap-3 text-[13px] mb-3"><strong>Lead import · {importProgress.phase}</strong><span>{importProgress.phase==='complete'?'100%':importProgress.total?Math.min(99,Math.floor(100*importProgress.completed/importProgress.total))+'%':''}</span></div><progress aria-label="Lead import progress" className="w-full h-2 accent-[var(--color-brand)]" max={importProgress.total || 1} value={importProgress.phase==='complete'?(importProgress.total || 1):importProgress.total===null?undefined:importProgress.completed}/><p className="mt-2 text-[12px] text-[var(--color-muted)]">{importProgress.result?`${importProgress.result.imported} imported · ${importProgress.result.duplicates} duplicates · ${importProgress.result.invalid} invalid`:importProgress.error || 'Saving real import records. You can follow this progress from any section.'}</p>{['complete','error'].includes(importProgress.phase)&&<button className="mt-2 underline text-[12px]" onClick={()=>setImportProgress(null)}>Dismiss</button>}</div>}
           {busy && <p role="status" className="mb-3 text-[var(--color-muted)]">Saving changes…</p>}

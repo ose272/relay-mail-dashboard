@@ -55,7 +55,16 @@ test('summary-only sending polls do not load delivery activity',async()=>{
  db.sqlite.exec("INSERT INTO templates(id,name,subject,body,created_at) VALUES('p','Plan','','Body','2026-01-01');INSERT INTO campaigns(id,name,template_id,status,created_at,allocation_json) VALUES('c','Direct send','p','Sending','2026-01-01','[]')");
  db.sqlite.exec("UPDATE campaigns SET in_flight_count=7,next_send_at='2026-11-20T09:00:00.000Z' WHERE id='c'");
  const queries=[],prepare=db.prepare;db.prepare=sql=>{queries.push(sql);return prepare(sql);};
- const result=await call(db,'sending/status?summary=1');assert.equal(result.status,200);assert.deepEqual(result.data.deliveries,[]);assert.equal(result.data.runs.length,1);assert.equal(result.data.runs[0].inFlight,7);assert.equal(result.data.runs[0].nextSendAt,'2026-11-20T09:00:00.000Z');assert.ok(!queries.some(sql=>sql.includes('d.started_at, d.sent_at')));
+ const result=await call(db,'sending/status?summary=1');assert.equal(result.status,200);assert.deepEqual(result.data.deliveries,[]);assert.equal(result.data.runs.length,1);assert.equal(result.data.runs[0].inFlight,7);assert.equal(result.data.runs[0].nextSendAt,'2026-11-20T09:00:00.000Z');assert.ok(!queries.some(sql=>sql.includes('d.started_at, d.sent_at')));assert.ok(!queries.some(sql=>sql.includes('account_health_events') || sql.includes('delivery_bounces')));
  queries.length=0;await call(db,'sending/status');assert.ok(queries.some(sql=>sql.includes('d.started_at, d.sent_at')));
  const day=new Date().toISOString().slice(0,10);assert.ok(db.sqlite.prepare('SELECT rows_written FROM app_usage_days WHERE day=?').get(day).rows_written>=3);
 }finally{db.sqlite.close();}});
+
+
+test('internal sender releases headers before work finishes and keeps confirmation in the body',{timeout:5000},async()=>{
+ const db=createTestDb();let release;const gate=new Promise(r=>release=r);const prepare=db.prepare;
+ db.prepare=sql=>{const statement=prepare(sql);if(sql.includes('SELECT c.id FROM campaigns c')){const bind=statement.bind;statement.bind=(...args)=>{const bound=bind(...args),first=bound.first;bound.first=async()=>{await gate;return first();};return bound;};}return statement;};
+ try{const request=new Request('http://localhost/api/internal/send-tick',{method:'POST',headers:{Origin:'http://localhost','Content-Type':'application/json'},body:'{}'});
+ const response=await onRequest({request,env:{DB:db}});const reader=response.body.getReader();const initial=await reader.read();assert.equal(new TextDecoder().decode(initial.value),' ');release();let text='';for(;;){const part=await reader.read();if(part.done)break;text+=new TextDecoder().decode(part.value);}assert.equal(JSON.parse(text).httpStatus,200);assert.equal(JSON.parse(text).done,true);
+ }finally{release();db.sqlite.close();}
+});

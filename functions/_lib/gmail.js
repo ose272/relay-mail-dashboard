@@ -1,3 +1,4 @@
+import {extractBounceReports} from '../../src/bounces.mjs';
 import { ImapFlow } from 'imapflow';
 import { simpleParser } from 'mailparser';
 import nodemailer from 'nodemailer';
@@ -97,7 +98,7 @@ export async function checkGmailHealth(email, password) {
   return { imap: !imapError, smtp: !smtpError, imapError, smtpError };
 }
 
-async function fetchRecentMailbox(email, password, mailboxPath, checkpoint) {
+async function fetchRecentMailbox(email, password, mailboxPath, checkpoint, bouncesOnly = false) {
   const client = createImapClient(email, password);
   let connected = false;
   try {
@@ -116,22 +117,28 @@ async function fetchRecentMailbox(email, password, mailboxPath, checkpoint) {
       const sameMailbox = checkpoint.uid > 0 && checkpoint.uidValidity === uidValidity;
       const firstUid = checkpoint.uid + 1;
       const lastUid = sameMailbox ? Math.min(latestUid, checkpoint.uid + messageLimit) : latestUid;
-      if (sameMailbox && firstUid > lastUid) {
+      if (!bouncesOnly && sameMailbox && firstUid > lastUid) {
         return { messages: [], checked: 0, uid: checkpoint.uid, uidValidity, more: false };
       }
       if (!total) return { messages: [], checked: 0, uid: latestUid, uidValidity, more: false };
 
+      let bounceUids=[];
+      if(bouncesOnly){
+        const found=await client.search({since:new Date(Date.now()-30*86400000),or:[{from:'mailer-daemon'},{from:'postmaster'}]},{uid:true});
+        bounceUids=(found || []).filter(uid=>!sameMailbox || uid>checkpoint.uid).sort((a,b)=>a-b);
+        if(!bounceUids.length)return {messages:[],checked:0,uid:latestUid,uidValidity,more:false};
+      }
       const firstSequence = Math.max(1, total - messageLimit + 1);
-      const range = sameMailbox ? `${firstUid}:${lastUid}` : `${firstSequence}:${total}`;
+      const range = bouncesOnly ? bounceUids.slice(0,messageLimit).join(',') : sameMailbox ? `${firstUid}:${lastUid}` : `${firstSequence}:${total}`;
       const fetched = await client.fetchAll(range, {
         uid: true,
         envelope: true,
         internalDate: true,
         flags: true,
         source: true
-      }, sameMailbox ? { uid: true } : undefined);
+      }, (sameMailbox || bouncesOnly) ? { uid: true } : undefined);
       const fetchedUid = fetched.reduce((max, item) => Math.max(max, item.uid || 0), 0);
-      const syncUid = sameMailbox ? lastUid : fetchedUid;
+      const syncUid = bouncesOnly ? fetchedUid : sameMailbox ? lastUid : fetchedUid;
       const messages = [];
       for (const item of fetched.reverse()) {
         if (!item.source) continue;
@@ -152,6 +159,7 @@ async function fetchRecentMailbox(email, password, mailboxPath, checkpoint) {
           messageId: parsed.messageId || '',
           inReplyTo: parsed.inReplyTo || '',
           references: Array.isArray(parsed.references) ? parsed.references : parsed.references ? [parsed.references] : [],
+          bounceReports: mailboxPath==='INBOX' ? extractBounceReports({fromAddress,text:parsed.text || '',attachments:parsed.attachments,inReplyTo:parsed.inReplyTo,references:Array.isArray(parsed.references)?parsed.references:[]}) : [],
           unread: !item.flags?.has('\\Seen')
         });
       }
@@ -161,7 +169,7 @@ async function fetchRecentMailbox(email, password, mailboxPath, checkpoint) {
         checked: fetched.length,
         uid: syncUid,
         uidValidity,
-        more: syncUid < latestUid
+        more: bouncesOnly ? bounceUids.length>messageLimit : syncUid < latestUid
       };
     } finally {
       lock.release();
@@ -173,6 +181,10 @@ async function fetchRecentMailbox(email, password, mailboxPath, checkpoint) {
 
 export async function fetchRecentInbox(email, password, checkpoint) {
   return fetchRecentMailbox(email, password, 'INBOX', checkpoint);
+}
+
+export async function fetchRecentBounces(email,password,checkpoint){
+ return fetchRecentMailbox(email,password,'INBOX',checkpoint,true);
 }
 
 export async function fetchRecentSent(email, password, checkpoint) {

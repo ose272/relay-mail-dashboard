@@ -1,3 +1,5 @@
+import {sendFailureHealth} from '../../src/send-health.mjs';
+import {recordBounceReports} from '../../src/bounces.mjs';
 import { meteredD1, usageBudgets } from '../_lib/usage-budget.js';
 import { selectReadyDelivery, claimReadyDeliverySql, seedSenderQueue } from '../../src/ready-senders.mjs';
 import { SEND_CONCURRENCY } from '../../src/send-limits.mjs';
@@ -5,7 +7,7 @@ import { expireStaleDeliveriesSql } from '../../src/send-selection.mjs';
 import { allocateRepeatedCampaign, assignScoutingPlans, assessAccountHealth, parseLeads } from '../../src/domain.mjs';
 import { eligibleLeadsSql } from '../../src/sending-query.mjs';
 import { decryptCredential, encryptCredential } from '../_lib/credentials.js';
-import { checkGmailHealth, fetchRecentInbox, fetchRecentSent, sendCampaignMessage, sendThreadReply, verifyGmailCredentials } from '../_lib/gmail.js';
+import { checkGmailHealth, fetchRecentInbox, fetchRecentBounces, fetchRecentSent, sendCampaignMessage, sendThreadReply, verifyGmailCredentials } from '../_lib/gmail.js';
 
 const emailPattern = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 const encoder = new TextEncoder();
@@ -1172,7 +1174,7 @@ async function handlePost(request, env, path) {
     if (typeof body.accountId !== 'string') throw new HttpError(400, 'Choose a connected account to sync.');
     const account = await db.prepare(`
       SELECT id, email, connection, credential_ciphertext, last_sync_uid, last_sync_uid_validity,
-        last_sent_sync_uid, last_sent_sync_uid_validity
+        last_sent_sync_uid, last_sent_sync_uid_validity, last_bounce_sync_uid, last_bounce_sync_uid_validity
       FROM accounts WHERE id = ?
     `).bind(body.accountId).first();
     if (!account?.credential_ciphertext || !['Connected', 'IMAP only'].includes(account.connection)) {
@@ -1186,7 +1188,7 @@ async function handlePost(request, env, path) {
       return jsonResponse(200, { ok: true, email: account.email, imported: 0, checked: 0 });
     }
     const password = await decryptCredential(account.email, account.credential_ciphertext, env.CREDENTIALS_ENCRYPTION_KEY);
-    let incoming = null, sent = null, inboxError = null, sentError = null;
+    let incoming = null, sent = null, bounceInbox = null, inboxError = null, sentError = null, bounceError = null;
     try {
       incoming = await fetchRecentInbox(account.email, password, {
         uid: account.last_sync_uid,
@@ -1203,11 +1205,15 @@ async function handlePost(request, env, path) {
     } catch (error) {
       sentError = mailSyncError('Sent folder', error);
     }
-    if (!incoming && !sent) {
-      throw new HttpError(502, [inboxError, sentError].filter(Boolean).join(' · '), 'MAIL_SYNC_FAILED');
+    try {
+      bounceInbox=await fetchRecentBounces(account.email,password,{uid:account.last_bounce_sync_uid,uidValidity:account.last_bounce_sync_uid_validity});
+    }catch(error){bounceError=mailSyncError('Bounce reports',error);}
+    if (!incoming && !sent && !bounceInbox) {
+      throw new HttpError(502, [inboxError, sentError, bounceError].filter(Boolean).join(' · '), 'MAIL_SYNC_FAILED');
     }
 
     const incomingMessages = incoming?.messages || [];
+    const bounces=await recordBounceReports(db,account.id,[...incomingMessages,...(bounceInbox?.messages || [])]);
     const senderEmails = [...new Set(incomingMessages.map(message => message.fromAddress).filter(Boolean))];
     let relevantMessages = [];
     if (senderEmails.length) {
@@ -1366,6 +1372,7 @@ async function handlePost(request, env, path) {
         UPDATE accounts SET last_sync_uid = ?, last_sync_uid_validity = ? WHERE id = ?
       `).bind(incoming.uid, incoming.uidValidity, account.id));
     }
+    if(bounceInbox){checkpointStatements.push(db.prepare('UPDATE accounts SET last_bounce_sync_uid=?,last_bounce_sync_uid_validity=? WHERE id=?').bind(bounceInbox.uid,bounceInbox.uidValidity,account.id));}
     if (sent) {
       checkpointStatements.push(db.prepare(`
         UPDATE accounts SET last_sent_sync_uid = ?, last_sent_sync_uid_validity = ? WHERE id = ?
@@ -1380,8 +1387,10 @@ async function handlePost(request, env, path) {
       email: account.email,
       imported,
       changedThreadIds: [...changedThreadIds].slice(0, 100),
-      checked: (incoming?.checked || 0) + (sent?.checked || 0),
-      more: Boolean(incoming?.more || sent?.more),
+      checked: (incoming?.checked || 0) + (sent?.checked || 0) + (bounceInbox?.checked || 0),
+      more: Boolean(incoming?.more || sent?.more || bounceInbox?.more),
+      bounces,
+      bounceError,
       inboxError,
       sentError
     });
@@ -1596,6 +1605,8 @@ async function handlePost(request, env, path) {
         messageId
       });
     } catch (error) {
+      const health=sendFailureHealth(error);
+      if(health){await saveAccountHealth(db,delivery.account_id,health);if(health.pause)await db.prepare('UPDATE accounts SET paused=1 WHERE id=?').bind(delivery.account_id).run();}
       const responseCode = Number(error.responseCode || 0);
       const attemptNumber = Number(delivery.attempt_count || 0) + 1;
       const diagnostic = Number.isInteger(responseCode) && responseCode > 0
@@ -1614,16 +1625,19 @@ async function handlePost(request, env, path) {
             SET status = 'queued', retry_after = ?, last_error = ?
             WHERE id = ? AND status = 'sending'
           `).bind(retryAt, diagnostic, delivery.id),
+          db.prepare("UPDATE accounts SET send_retry_after=MAX(COALESCE(send_retry_after,''),?) WHERE id=?").bind(retryAt,delivery.account_id),
           db.prepare(`
             UPDATE campaigns SET
-              status = CASE WHEN status IN ('User paused','Needs review') THEN status ELSE 'Scheduled' END,
-              next_send_at = CASE WHEN status IN ('User paused','Needs review') THEN next_send_at ELSE ? END
-            WHERE id = ?
-          `).bind(retryAt, campaignId)
+              status = CASE WHEN EXISTS(SELECT 1 FROM sender_ready r WHERE r.campaign_id=campaigns.id
+                AND r.enabled=1 AND r.next_delivery_id IS NOT NULL AND r.ready_at<=?) THEN 'Sending' ELSE 'Scheduled' END,
+              next_send_at=(SELECT MIN(ready_at) FROM sender_ready r WHERE r.campaign_id=campaigns.id
+                AND r.enabled=1 AND r.next_delivery_id IS NOT NULL)
+            WHERE id=? AND status IN ('Sending','Scheduled','Dry run','Paused')
+          `).bind(nowIso,campaignId)
         ]);
         return jsonResponse(200, {
           ok: true,
-          paused: true,
+          deferred: true,
           retryAt,
           reason: 'Gmail temporarily limited this send. It will be retried automatically.'
         });
@@ -1829,11 +1843,17 @@ async function handleRequest({ request, env }) {
             l.email AS recipient, l.name, a.email AS sender, t.subject, t.name AS plan_name
           FROM campaign_deliveries d JOIN leads l ON l.id = d.lead_id
           JOIN accounts a ON a.id = d.account_id LEFT JOIN templates t ON t.id = d.template_id
-          WHERE d.campaign_id = ? AND d.status = ? ORDER BY d.created_at DESC, d.id DESC LIMIT 50
+          WHERE d.campaign_id = ? AND d.status = ? AND NOT EXISTS(SELECT 1 FROM delivery_bounces b WHERE b.delivery_id=d.id) ORDER BY d.created_at DESC, d.id DESC LIMIT 50
         `).bind(runs[0].id, status).all()));
-        deliveries = groups.flatMap(resultRows);
+        const bounced=await db.prepare(`SELECT d.id,'failed' AS status,d.started_at,b.received_at AS sent_at,d.created_at,b.code AS last_error,
+          l.email AS recipient,l.name,a.email AS sender,t.subject,t.name AS plan_name
+          FROM (SELECT delivery_id,code,received_at FROM delivery_bounces WHERE campaign_id=? ORDER BY received_at DESC,delivery_id DESC LIMIT 50) b
+          JOIN campaign_deliveries d ON d.id=b.delivery_id JOIN leads l ON l.id=d.lead_id JOIN accounts a ON a.id=d.account_id LEFT JOIN templates t ON t.id=d.template_id`).bind(runs[0].id).all();
+        const seen=new Map();
+        deliveries=[...groups.flatMap(resultRows),...resultRows(bounced)].sort((a,b)=>String(b.sent_at || b.started_at || b.created_at).localeCompare(String(a.sent_at || a.started_at || a.created_at))).filter(d=>{const count=(seen.get(d.status)||0)+1;seen.set(d.status,count);return count<=50;});
       }
-      return jsonResponse(200, { runs, deliveries });
+      const accountAlerts=url.searchParams.get('summary')==='1'?undefined:resultRows(await env.DB.prepare(`SELECT e.id,e.account_id AS accountId,a.email AS accountEmail,e.status,e.message FROM account_health_events e JOIN accounts a ON a.id=e.account_id WHERE e.resolved_at IS NULL ORDER BY e.created_at DESC LIMIT 10`).all());
+      return jsonResponse(200, { runs, deliveries, ...(accountAlerts?{accountAlerts}:{}) });
     }
     if (request.method !== 'POST') return jsonResponse(405, { error: 'Method not allowed.' });
     return await handlePost(request, env, path);
@@ -1879,6 +1899,22 @@ export async function onRequest(context) {
    return jsonResponse(503,{error:'The application usage safety budget is reached. Sending is held until the next daily reset.',code:'APP_USAGE_BUDGET',resetAt});
  }
  const meter=meteredD1(env.DB,initial,budgets);
+ // Send headers immediately so the scheduler's 50 logical requests are not
+ // serialized by the runtime's six waiting-for-headers connection slots.
+ // The JSON body remains pending until SMTP and database confirmation finish.
+ if(request.method==='POST' && url.pathname==='/api/internal/send-tick'){
+   const encoder=new TextEncoder();
+   return new Response(new ReadableStream({async start(controller){
+     controller.enqueue(encoder.encode(' '));
+     try{
+       const result=await handleRequest({...context,env:{...env,DB:meter.db}});
+       const data=await result.json();
+       await meter.flush(day).catch(()=>{});
+       controller.enqueue(encoder.encode(JSON.stringify({...data,httpStatus:result.status})));
+       controller.close();
+     }catch(error){controller.error(error);}
+   }}),{headers:{'Content-Type':'application/json; charset=utf-8','Cache-Control':'no-store'}});
+ }
  const response=await handleRequest({...context,env:{...env,DB:meter.db}});
  const finish=()=>meter.flush(day).catch(()=>{});
  if(response.headers.get('Content-Type')?.includes('application/x-ndjson') && response.body){

@@ -2,14 +2,12 @@
 
 ## Current release state
 
-The source changes in this repository include a cached ready-sender queue and
-quota reservations. These latest changes are **not yet deployed to production**.
-D1 rejected database operations with Free-tier error 7500 on November 19, 2026.
-The scheduler cron is disabled. The user chose to wait for the daily quota reset
-at 01:00 Africa/Lagos on November 20 before applying migrations and resuming.
-GitHub publishing does not deploy this project automatically (Cloudflare Git
-Provider is disabled). Do not enable the scheduler before migrations and API
-verification succeed.
+The cached ready-sender queue, quota reservations, 50-account concurrency,
+early-header sender transport, live progress, manual bounce reconciliation and
+account alerts are deployed. Migrations 0026–0028 are applied. Workers Paid was
+activated on November 19, 2026 and the once-per-minute scheduler is registered.
+The campaign's user pause or review state is preserved. GitHub publishing does
+not automatically deploy this project (Cloudflare Git Provider is disabled).
 
 ## Why reads were high
 
@@ -42,7 +40,7 @@ without resetting existing usage or resending completed deliveries.
 ## Application usage guard
 
 Migration 0027 stores daily API row-read and row-write accounting from D1 metadata.
-The application stops starting work at 4,000,000 reads or 80,000 writes, below the
+By default, the application stops starting work at 4,000,000 reads or 80,000 writes, below the
 Free allowance of 5,000,000 reads and 100,000 writes per UTC day. The headroom is
 for in-flight requests, accounting and external operations. An already-started
 send is always allowed to record confirmation.
@@ -77,18 +75,18 @@ npm run frontend:build
 ```
 
 Tests cover an 8,880-delivery fixture, queue indexes, slot reservations, exact
-rolling expiry, quota backfill, cap/pause edits, uncertain delivery, 10 concurrent
+rolling expiry, quota backfill, cap/pause edits, uncertain delivery, 50 concurrent
 senders, summary-only polling and the application usage guard. Local browser
 checks must not contact real mail providers or send test messages.
 
-After the quota reset, keep cron disabled and apply the migrations:
+For a new deployment, keep cron disabled until required migrations are applied:
 
 ```powershell
 node node_modules/wrangler/bin/wrangler.js d1 migrations apply relay-mail-dashboard --remote --config wrangler.production.jsonc
 npm run pages:deploy
 ```
 
-The deployment script fails closed until migrations 0026 and 0027 are present.
+The deployment script fails closed until migrations 0026 through 0028 are present.
 It uses the ignored production binding temporarily and restores the placeholder
 Wrangler configuration in a finally block. Verify cached counts/readiness and a
 small sample of real D1 metadata, then restore the authorized existing campaign:
@@ -106,3 +104,7 @@ Paid-plan deployment: set the non-secret Pages variable APP_USAGE_TIER=paid afte
 Sending now supports 50 concurrent distinct accounts, with a 750-result scheduler batch and at most 1,500 attempts including contention. Per-account exclusion, rolling 40-send caps, manual-only reply checks, and stop-on-uncertain behavior remain enforced. Batch throughput depends on available quota and provider latency.
 
 Visible Sending-page counters refresh every 2 seconds during Sending (15 seconds while Scheduled). Poll requests do not overlap and pause when hidden; activity remains throttled to 30 seconds. Summaries read stored campaign counters, including in-flight accounts and the next scheduled time; they do not scan delivery history or check inboxes.
+
+Internal send-tick replies stream headers immediately and deliver their JSON confirmation only after SMTP/database work finishes, avoiding the six waiting-for-headers slots. Clients must check httpStatus in the body as well as HTTP status. A definite temporary SMTP rejection defers that sender only; its ready queue is held until retry time while other senders continue. Unknown confirmations still stop sending and require review.
+
+Migration 0028 adds idempotent post-acceptance bounce records and incremental failure counters while preserving SMTP-accepted quota. Manual sync pages through at most 25 daemon/postmaster reports per account (last 30 days), using a separate UID checkpoint. It never automatically scans mail. Dashboard alerts use a bounded unresolved-event index; two-second counter polls do not load alerts, accounts, or delivery history. Confirmed authentication/restriction errors pause the sender; temporary sending limits remain warnings and use persistent per-account retry readiness.

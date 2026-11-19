@@ -134,7 +134,7 @@ export const SendingPage: React.FC<SendingPageProps> = ({
         <MetricCard
           label="SENT"
           value={sendingState.sentCount}
-          subtitle="Confirmed by sender"
+          subtitle="Accepted · no recorded bounce"
           icon={<SendIcon size={20} />}
           active={statusFilter === 'Sent'}
           onClick={() =>
@@ -154,7 +154,7 @@ export const SendingPage: React.FC<SendingPageProps> = ({
         <MetricCard
           label="FAILED"
           value={sendingState.failedCount}
-          subtitle="Provider rejected"
+          subtitle="Rejected or bounced"
           icon={<XMarkIcon size={20} />}
           active={statusFilter === 'Failed'}
           onClick={() =>
@@ -235,7 +235,7 @@ export const SendingPage: React.FC<SendingPageProps> = ({
             </div>
           </div>
 
-          {sendingState.id && <p role="status" className="text-[12px] text-[var(--color-muted)] tabular-nums">{sendingState.status==='running' ? sendingState.inFlight ? `${sendingState.inFlight} accounts sending now · ` : sendingState.backendStatus==='Scheduled' && sendingState.nextSendAt ? `Scheduled for ${new Date(sendingState.nextSendAt).toLocaleString('en-GB',{timeZone:'Africa/Lagos'})} Lagos time · ` : 'Waiting for the next background batch · ' : ''}{sendingState.updatedAt ? `Updated ${new Date(sendingState.updatedAt).toLocaleTimeString('en-GB',{timeZone:'Africa/Lagos'})} · ` : ''}Confirmed deliveries only{sendingState.status==='running' && sendingState.backendStatus==='Sending' ? ' · Live counters refresh every 2 seconds' : ''}</p>}
+          {sendingState.id && <p role="status" className="text-[12px] text-[var(--color-muted)] tabular-nums">{sendingState.status==='running' ? sendingState.inFlight ? `${sendingState.inFlight} accounts sending now · ` : sendingState.backendStatus==='Scheduled' && sendingState.nextSendAt ? `Scheduled for ${new Date(sendingState.nextSendAt).toLocaleString('en-GB',{timeZone:'Africa/Lagos'})} Lagos time · ` : 'Waiting for the next background batch · ' : ''}{sendingState.updatedAt ? `Updated ${new Date(sendingState.updatedAt).toLocaleTimeString('en-GB',{timeZone:'Africa/Lagos'})} · ` : ''}Accepted sends minus recorded bounces · Check bounces with manual inbox sync{sendingState.status==='running' && sendingState.backendStatus==='Sending' ? ' · Live counters refresh every 2 seconds' : ''}</p>}
 
           {/* Activity Table Header Controls */}
           <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">

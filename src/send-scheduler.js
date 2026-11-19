@@ -18,8 +18,8 @@ export default {
             body: JSON.stringify({senderSlot})
           });
           const result = await response.json();
-          if (!response.ok) {
-            console.error('Background send tick was rejected:', response.status, result.error || '');
+          if (!response.ok || Number(result.httpStatus || 200) >= 400 || result.error) {
+            console.error('Background send tick was rejected:', result.httpStatus || response.status, result.error || '');
             stopped = true; return;
           }
           if (result.busy) {
@@ -27,7 +27,7 @@ export default {
             await new Promise(resolve => setTimeout(resolve, 100));
             continue;
           }
-          if (result.sent !== true && result.failed !== true) { stopped = true; return; }
+          if (result.sent !== true && result.failed !== true && result.deferred !== true) { stopped = true; return; }
         } catch {
           // Never retry a request with unknown delivery confirmation.
           console.error('Background send tick did not return confirmation; stopping this invocation.');
