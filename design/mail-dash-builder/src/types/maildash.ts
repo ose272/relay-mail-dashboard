@@ -5,7 +5,8 @@ export type NavPage =
   | 'leads'
   | 'scouting-plans'
   | 'accounts'
-  | 'settings';
+  | 'settings'
+  | 'notifications';
 
 export type DeliveryResultStatus = 'Sent' | 'Failed' | 'Needs review' | 'Queued';
 
@@ -34,6 +35,7 @@ export interface SendingState {
   sentCount: number;
   queuedCount: number;
   failedCount: number;
+  cancelledCount?:number;
   needsReviewCount: number;
   plannedTotal: number;
   records: DeliveryRecord[];
@@ -52,6 +54,7 @@ export interface InboxMessage {
 }
 
 export interface InboxThread {
+  historyBeforeUid?:number|null;
   inboundDay?: string;
   id: string;
   contactName: string;

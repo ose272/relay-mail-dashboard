@@ -6,5 +6,5 @@ export function createTestDb(){
  // The local test database never inherits production credentials or messages.
  sqlite.exec('DELETE FROM templates');
  const adapt=(sql,values=[])=>({bind:(...args)=>adapt(sql,args),first:async()=>sqlite.prepare(sql).get(...values)||null,all:async()=>({results:sqlite.prepare(sql).all(...values)}),run:async()=>{const r=sqlite.prepare(sql).run(...values);return{success:true,meta:{changes:Number(r.changes)}};}});
- return {sqlite,prepare:sql=>{const base=adapt(sql);const bind=base.bind;base.bind=(...args)=>{if(args.length>100)throw new Error('D1 parameter limit exceeded');return bind(...args);};return base;},batch:async statements=>Promise.all(statements.map(s=>s.run()))};
+ return {sqlite,prepare:sql=>{const base=adapt(sql);const bind=base.bind;base.bind=(...args)=>{if(args.length>100)throw new Error('D1 parameter limit exceeded');return bind(...args);};return base;},batch:async statements=>{sqlite.exec('BEGIN');try{const results=[];for(const statement of statements)results.push(await statement.run());sqlite.exec('COMMIT');return results;}catch(error){sqlite.exec('ROLLBACK');throw error;}}};
 }

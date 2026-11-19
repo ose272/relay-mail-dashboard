@@ -1,3 +1,4 @@
+import {Bell} from 'lucide-react';
 import React, { useState } from 'react';
 import { NavPage, WorkspaceProfile } from '../../types/maildash';
 import {
@@ -21,6 +22,7 @@ export interface NavItemConfig {
   label: string;
   icon: React.ComponentType<{ size?: number; className?: string }>;
   badge?: number;
+  dot?:boolean;
 }
 
 interface SidebarProps {
@@ -33,6 +35,7 @@ interface SidebarProps {
   onSelectWorkspace: (ws: WorkspaceProfile) => void;
   unreadInboxCount: number;
   needsReviewCount: number;
+  hasUnreadNotifications:boolean;
   mobileOpen: boolean;
   onCloseMobile: () => void;
 }
@@ -46,7 +49,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
   activeWorkspace,
   onSelectWorkspace,
   unreadInboxCount,
-  needsReviewCount,
+  needsReviewCount, hasUnreadNotifications,
   mobileOpen,
   onCloseMobile,
 }) => {
@@ -59,6 +62,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
     { id: 'leads', label: 'Leads', icon: UsersIcon },
     { id: 'scouting-plans', label: 'Scouting plans', icon: CalendarIcon },
     { id: 'accounts', label: 'Accounts', icon: AccountIcon },
+    { id: 'notifications',label:'Notifications',icon:Bell,dot:hasUnreadNotifications },
     { id: 'settings', label: 'Settings', icon: SettingsIcon },
   ];
 
@@ -114,7 +118,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
             const isActive = activePage === item.id;
             return (
               <button
-                key={item.id}
+                key={item.id} aria-label={item.label}
                 type="button"
                 onClick={() => handleSelectNav(item.id)}
                 className={`relative w-full h-[48px] px-3.5 rounded-[12px] flex items-center justify-between gap-3 transition-colors duration-150 cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-brand)] ${
@@ -135,6 +139,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
                     {item.label}
                   </span>
                 </span>
+                {item.dot && <span aria-label="Unread notifications" className="w-2 h-2 rounded-full bg-[var(--color-brand)]"/>}
                 {item.badge !== undefined && item.badge > 0 && (
                   <span
                     className={`text-[11px] font-semibold tabular-nums px-2 py-0.5 rounded-full ${

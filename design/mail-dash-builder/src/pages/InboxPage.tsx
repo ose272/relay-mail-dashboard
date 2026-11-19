@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { Archive, MailOpen, Search, Star, Send } from 'lucide-react';
+import { Archive, MailOpen, Search, Star, Send, ArrowLeft } from 'lucide-react';
 import { InboxThread, ThreadTag } from '../types/maildash';
 import { InboxIcon } from '../components/ui/BrandIcons';
 import {
@@ -11,7 +11,9 @@ import {
 } from '../components/ui/DesignSystem';
 
 interface InboxPageProps {
-  onSync: () => Promise<void>;
+  conversationLoadingId:string;
+  onLoadOlder:(id:string)=>void;
+  onSync: (includeSent?:boolean) => Promise<void>;
   threads: InboxThread[];
   selectedThreadId: string;
   onSelectThread: (id: string) => void;
@@ -25,7 +27,7 @@ interface InboxPageProps {
 type InboxFilter = 'All' | 'Unread' | 'Interested' | 'Starred' | 'Archived';
 
 export const InboxPage: React.FC<InboxPageProps> = ({
-  onSync,
+  onSync, conversationLoadingId,onLoadOlder,
   threads,
   selectedThreadId,
   onSelectThread,
@@ -36,6 +38,18 @@ export const InboxPage: React.FC<InboxPageProps> = ({
   onToggleRead,
 }) => {
   const [filter, setFilter] = useState<InboxFilter>('All');
+  const [includeSent,setIncludeSent]=useState(false);
+  const [isMobile,setIsMobile]=useState(()=>window.matchMedia('(max-width:1023px)').matches);
+  const [mobileThreadOpen,setMobileThreadOpen]=useState(()=>window.location.hash.startsWith('#conversation/'));
+  const listRef=useRef<HTMLDivElement>(null),readerRef=useRef<HTMLDivElement>(null);
+  const inboxPosition=useRef({page:0,list:0}),lastHandledRoute=useRef(window.location.hash);
+  const routeId=()=>{try{return window.location.hash.startsWith('#conversation/')?decodeURIComponent(window.location.hash.slice(14)):'';}catch{return '';}};
+  useEffect(()=>{const media=window.matchMedia('(max-width:1023px)');const change=()=>setIsMobile(media.matches);media.addEventListener('change',change);return()=>media.removeEventListener('change',change);},[]);
+  const restoreInbox=()=>{setMobileThreadOpen(false);requestAnimationFrame(()=>{if(listRef.current)listRef.current.scrollTop=inboxPosition.current.list;window.scrollTo({top:inboxPosition.current.page,behavior:'instant'});});};
+  useEffect(()=>{const route=()=>{const hash=window.location.hash;if(lastHandledRoute.current===hash)return;lastHandledRoute.current=hash;const id=routeId();if(id){setMobileThreadOpen(true);onSelectThread(id);}else if(hash==='#inbox' || !hash)restoreInbox();else setMobileThreadOpen(false);};window.addEventListener('popstate',route);window.addEventListener('hashchange',route);return()=>{window.removeEventListener('popstate',route);window.removeEventListener('hashchange',route);};},[onSelectThread]);
+  const openConversation=(id:string)=>{if(isMobile){inboxPosition.current={page:window.scrollY,list:listRef.current?.scrollTop || 0};window.history.pushState({...window.history.state,relayConversation:true},'', '#conversation/'+encodeURIComponent(id));lastHandledRoute.current=window.location.hash;setMobileThreadOpen(true);}onSelectThread(id);};
+  const backToInbox=()=>{restoreInbox();if(window.history.state?.relayConversation)window.history.back();else window.history.replaceState({...window.history.state,relayConversation:false},'','#inbox');};
+  useEffect(()=>{if(isMobile && mobileThreadOpen)requestAnimationFrame(()=>{readerRef.current?.scrollIntoView({block:'start',behavior:'instant'});readerRef.current?.focus({preventScroll:true});});},[isMobile,mobileThreadOpen]);
   const [searchQuery, setSearchQuery] = useState('');
   const [replyText, setReplyText] = useState('');
   const replyDrafts=useRef<Record<string,string>>({});
@@ -67,7 +81,7 @@ export const InboxPage: React.FC<InboxPageProps> = ({
   }, [threads, filter, searchQuery]);
 
   const activeThread =
-    filteredThreads.find((t) => t.id === selectedThreadId) ??
+    filteredThreads.find((t) => t.id === (isMobile && mobileThreadOpen && routeId()?routeId():selectedThreadId)) ??
     filteredThreads[0] ??
     null;
 
@@ -92,11 +106,12 @@ export const InboxPage: React.FC<InboxPageProps> = ({
     }
   };
 
-  useEffect(()=>{if(activeThread && activeThread.id !== selectedThreadId)onSelectThread(activeThread.id);},[activeThread?.id,selectedThreadId]);
+  useEffect(()=>{if((!isMobile || mobileThreadOpen) && activeThread && activeThread.id !== selectedThreadId)onSelectThread(activeThread.id);},[activeThread?.id,selectedThreadId,isMobile,mobileThreadOpen]);
   useEffect(()=>{setReplyText(replyDrafts.current[activeThread?.id || ''] || '');},[activeThread?.id]);
   const handleReplySubmit=async(e:React.FormEvent)=>{e.preventDefault();if(!activeThread || !replyText.trim() || sending)return;setSending(true);try{await onSendReply(activeThread.id,replyText.trim());replyDrafts.current[activeThread.id]='';setReplyText('');}catch{}finally{setSending(false);}};
   return (
     <div className="space-y-6">
+      <div className={mobileThreadOpen?'hidden lg:contents':'contents'}>
       {/* Header */}
       <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
         <div>
@@ -104,18 +119,21 @@ export const InboxPage: React.FC<InboxPageProps> = ({
             Unified inbox
           </h1>
           <p className="text-[14px] text-[var(--color-muted)] mt-1">
-            Check replies manually with Sync connected inboxes, then respond from the receiving account.
+            Check replies and bounces manually across up to 100 accounts at once. New replies appear as each account finishes.
           </p>
         </div>
 
+        <div className="flex flex-col gap-2 items-start sm:items-end">
+        <label className="text-[12px] text-[var(--color-muted)] flex items-center gap-2"><input type="checkbox" checked={includeSent} disabled={syncing} onChange={e=>setIncludeSent(e.target.checked)}/>Include Sent folders (slower)</label>
         <PortfolioPillButton
           variant="secondary"
           size="md"
           disabled={syncing}
-          onClick={async()=>{setSyncing(true);try{await onSync();}finally{setSyncing(false);}}}
+          onClick={async()=>{setSyncing(true);try{await onSync(includeSent);}finally{setSyncing(false);}}}
         >
           {syncing ? 'Syncing…' : 'Sync connected inboxes'}
         </PortfolioPillButton>
+        </div>
       </div>
 
       {/* Summary Metrics */}
@@ -153,10 +171,11 @@ export const InboxPage: React.FC<InboxPageProps> = ({
         />
       </div>
 
+      </div>
       {/* Main Split Inbox Panel */}
       <SurfacePanel className="overflow-hidden">
         {/* Filter & Search Toolbar */}
-        <div className="px-6 py-4 border-b border-[var(--color-border)] flex flex-col md:flex-row md:items-center md:justify-between gap-3">
+        <div className={`${mobileThreadOpen?'hidden lg:flex':'flex'} px-6 py-4 border-b border-[var(--color-border)] flex-col md:flex-row md:items-center md:justify-between gap-3`}>
           <div className="flex items-center gap-1 p-1 rounded-[10px] bg-[var(--color-subtle)] overflow-x-auto">
             {(
               ['All', 'Unread', 'Interested', 'Starred', 'Archived'] as InboxFilter[]
@@ -194,7 +213,7 @@ export const InboxPage: React.FC<InboxPageProps> = ({
         {/* 2-Pane Reader */}
         <div className="grid grid-cols-1 lg:grid-cols-12 min-h-[540px]">
           {/* Thread List */}
-          <div className="lg:col-span-5 border-b lg:border-b-0 lg:border-r border-[var(--color-border)] divide-y divide-[var(--color-border)] max-h-[600px] overflow-y-auto">
+          <div ref={listRef} aria-label="Inbox conversations" className={`${mobileThreadOpen?'hidden lg:block':'block'} lg:col-span-5 border-b lg:border-b-0 lg:border-r border-[var(--color-border)] divide-y divide-[var(--color-border)] max-h-[600px] overflow-y-auto`}>
             {filteredThreads.length === 0 ? (
               <div className="p-10 text-center space-y-2">
                 <p className="text-[14px] font-semibold text-[var(--color-text)]">
@@ -210,8 +229,9 @@ export const InboxPage: React.FC<InboxPageProps> = ({
                 return (
                   <button
                     key={thr.id}
+                    aria-current={selected?'true':undefined}
                     type="button"
-                    onClick={() => onSelectThread(thr.id)}
+                    onClick={() => openConversation(thr.id)}
                     className={`relative w-full px-5 py-4 text-left transition-colors cursor-pointer flex items-start gap-3.5 ${
                       selected
                         ? 'bg-[var(--color-tint)]/65'
@@ -263,7 +283,8 @@ export const InboxPage: React.FC<InboxPageProps> = ({
           </div>
 
           {/* Conversation Detail & Reply Composer */}
-          <div className="lg:col-span-7 flex flex-col justify-between bg-[var(--color-surface)]">
+          <div ref={readerRef} role="region" tabIndex={-1} aria-label="Conversation reader" className={`${mobileThreadOpen?'flex':'hidden lg:flex'} scroll-mt-[104px] lg:col-span-7 flex-col justify-between bg-[var(--color-surface)]`}>
+            <div className="lg:hidden p-4 border-b border-[var(--color-border)]"><button type="button" className="flex items-center gap-2 text-[13px] font-medium" onClick={backToInbox}><ArrowLeft size={16}/>Back to inbox</button></div>
             {activeThread ? (
               <>
                 <div>
@@ -360,6 +381,11 @@ export const InboxPage: React.FC<InboxPageProps> = ({
                     </div>
                   </div>
 
+                  <div className="px-6 py-3 flex flex-wrap items-center gap-3 border-b border-[var(--color-border)] text-[12px] text-[var(--color-muted)]">
+                    <button type="button" className="underline" disabled={conversationLoadingId===activeThread.id} onClick={()=>onSelectThread(activeThread.id)}>Refresh conversation</button>
+                    {activeThread.historyBeforeUid && <button type="button" className="underline" disabled={conversationLoadingId===activeThread.id} onClick={()=>onLoadOlder(activeThread.id)}>Load older messages</button>}
+                    {conversationLoadingId===activeThread.id && <span role="status">Loading Gmail conversation from both sides…</span>}
+                  </div>
                   {/* Message History */}
                   <div className="p-6 space-y-4 max-h-[340px] overflow-y-auto">
                     {activeThread.messages.map((msg) => (

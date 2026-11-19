@@ -1,3 +1,5 @@
+import {NotificationsPage} from './pages/NotificationsPage';
+import {runSyncPool} from './lib/sync-pool';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { ConnectedAccount, InboxThread, Lead, LeadBatch, NavPage, ScoutingPlan, WorkspaceProfile, WorkspaceSettings, ThreadTag } from './types/maildash';
 import { api, ApiError, importWithProgress, type ImportProgress, csv, emptySending, lagosDay, mapAccount, mapLead, mapPlan, mapSending, mapThread } from './lib/api';
@@ -11,8 +13,12 @@ import { ScoutingPlansPage } from './pages/ScoutingPlansPage';
 import { AccountsPage } from './pages/AccountsPage';
 import { SettingsPage } from './pages/SettingsPage';
 
+const navigationPages:NavPage[]=['dashboard','inbox','sending','leads','scouting-plans','accounts','notifications','settings'];
+function pageFromLocation():NavPage{const hash=window.location.hash.slice(1).split('/')[0];if(hash==='conversation')return 'inbox';if(navigationPages.includes(hash as NavPage))return hash as NavPage;const saved=sessionStorage.getItem('relay-active-page');return navigationPages.includes(saved as NavPage)?saved as NavPage:'sending';}
 export default function App() {
- const [activePage,setActivePage]=useState<NavPage>('sending');
+ const [activePage,setActivePage]=useState<NavPage>(pageFromLocation);
+ useEffect(()=>{sessionStorage.setItem('relay-active-page',activePage);if(activePage==='inbox' && window.location.hash.startsWith('#conversation/'))return;if(window.location.hash!=='#'+activePage)window.history.replaceState({...window.history.state,relayConversation:false},'','#'+activePage);},[activePage]);
+ useEffect(()=>{const pop=()=>setActivePage(pageFromLocation());window.addEventListener('popstate',pop);return()=>window.removeEventListener('popstate',pop);},[]);
  const [theme,setTheme]=useState<'light'|'dark'>(()=>localStorage.getItem('relay-theme') === 'dark' ? 'dark':'light');
  const [mobileMenuOpen,setMobileMenuOpen]=useState(false);
  const [activeWorkspace,setActiveWorkspace]=useState<WorkspaceProfile>({id:'relay',name:'Relay Mail',subtitle:'Production workspace',ownerName:'Workspace owner',ownerEmail:'',avatarUrl:''});
@@ -25,16 +31,21 @@ export default function App() {
  const [importProgress,setImportProgress]=useState<ImportProgress|null>(null);
  const [usageBlocked,setUsageBlocked]=useState(false);
  const [notice,setNotice]=useState('');
+ const [syncHadErrors,setSyncHadErrors]=useState(false);
+ const failedSyncAccounts=useRef(new Set<string>()),lastSyncIncludeSent=useRef(false);
+ const [conversationLoadingId,setConversationLoadingId]=useState('');
+ const [notifications,setNotifications]=useState<any[]>([]),[notificationCursor,setNotificationCursor]=useState<string|null>(null);
  const [accountAlerts,setAccountAlerts]=useState<any[]>([]);
  const lastActivityAt=useRef(0);
  const [loaded,setLoaded]=useState(false), [error,setError]=useState(''), [unauthorized,setUnauthorized]=useState(false), [busy,setBusy]=useState(false);
  const selectedThreadRef=useRef('');
  const rawAccounts=useRef<any[]>([]), mutationLock=useRef(false), replyRequests=useRef(new Map<string,string>());
- const report=useCallback((e:unknown)=>{setError(e instanceof Error ? e.message : 'Request failed'); if(e instanceof ApiError && e.status===401) setUnauthorized(true);if(e instanceof ApiError && ['D1_READ_LIMIT','APP_USAGE_BUDGET','APP_USAGE_UNAVAILABLE'].includes(e.code))setUsageBlocked(true);},[]);
+ const report=useCallback((e:unknown)=>{setSyncHadErrors(false);setError(e instanceof Error ? e.message : 'Request failed'); if(e instanceof ApiError && e.status===401) setUnauthorized(true);if(e instanceof ApiError && ['D1_READ_LIMIT','APP_USAGE_BUDGET','APP_USAGE_UNAVAILABLE'].includes(e.code))setUsageBlocked(true);},[]);
  const refresh=useCallback(async(cursor='')=>{
   const data=await api('state?leadScope=active&leadCursor='+encodeURIComponent(cursor));
   rawAccounts.current=data.accounts || [];
   setAccountAlerts((data.healthEvents || []).filter((e:any)=>!e.resolvedAt).slice(0,10));
+  setNotifications((data.healthEvents || []).filter((e:any)=>!e.deletedAt));
   setAccounts(rawAccounts.current.map(mapAccount)); setThreads((data.threads || []).map((t:any)=>mapThread(t,rawAccounts.current)));
   setLeads((data.leads || []).map(mapLead)); setLeadTotal(Number(data.leadCounts?.active || 0)); setLeadPage(data.leadPage || {});
   setLeadBatches((data.leadImportBatches || []).map((b:any)=>({id:b.id,name:b.fileName,sourceLabel:`${b.importedCount} imported · ${b.duplicateCount} duplicates · ${b.invalidCount} invalid`,leadCount:Number(b.leadCount),planName:'Automatic allocation',importedAt:b.createdAt})));
@@ -78,7 +89,19 @@ export default function App() {
  const handleToggleRunStatus=()=>action(()=>api(sendingState.status==='running'?'campaign/pause':'campaign/resume-pending',{campaignId:sendingState.id}));
  const handleInitiateSending=()=>action(()=>api('sending/start',{}));
  const handleResolveRecord=(deliveryId:string,resolution:string)=>{if(resolution!=='retry')return Promise.resolve();if(!window.confirm('This email may already have been delivered. Check the sender’s Sent folder first. Retry with duplicate risk?'))return Promise.resolve();return action(()=>api('campaign/retry-uncertain',{deliveryId}));};
- const handleSelectThread=async(id:string)=>{selectedThreadRef.current=id;setSelectedThreadId(id);try{const data=await api('thread?id='+encodeURIComponent(id));setThreads(prev=>prev.map(t=>t.id===id?{...mapThread(data.thread,rawAccounts.current),inboundDay:t.inboundDay}:t));}catch(e){report(e);}};
+ const handleSelectThread=async(id:string,loadOlder=false)=>{
+  selectedThreadRef.current=id;setSelectedThreadId(id);
+  try{
+   const local=await api('thread?id='+encodeURIComponent(id));
+   setThreads(prev=>prev.map(t=>t.id===id?{...mapThread(local.thread,rawAccounts.current),inboundDay:t.inboundDay}:t));
+   const account=rawAccounts.current.find(a=>a.id===local.thread.accountId);
+   if(!account?.hasCredentials)return;
+   setConversationLoadingId(id);
+   const result=await api('mail/conversation',{threadId:id,manual:true,loadOlder});
+   if(result.busy){setNotice('This account is already syncing. Refresh the conversation when it finishes.');return;}
+   if(result.thread)setThreads(prev=>prev.filter(t=>!(result.retiredThreadIds || []).includes(t.id)).map(t=>t.id===id?{...mapThread(result.thread,rawAccounts.current),inboundDay:t.inboundDay}:t));
+  }catch(e){report(e);}finally{setConversationLoadingId(current=>current===id?'':current);}
+ };
  const handleSendReply=(id:string,text:string)=>action(async()=>{const key=id+'\n'+text;let requestId=replyRequests.current.get(key);if(!requestId){requestId=crypto.randomUUID();replyRequests.current.set(key,requestId);}await api('reply',{id,text,requestId});replyRequests.current.delete(key);});
  const updateThread=(id:string,updates:any)=>action(()=>api('thread/update',{id,...updates}));
  const handleUpdateThreadTag=(id:string,tag:ThreadTag)=>updateThread(id,{tag});
@@ -103,7 +126,38 @@ export default function App() {
  const handleRunDnsCheck=(id:string)=>action(()=>api('account/health/check',{accountId:id,force:true,suppressNotification:true}));
  const saveSettings=(next:WorkspaceSettings)=>action(()=>api('settings',{cap:next.dailyWorkspaceCap,workspaceName:next.workspaceName,healthNotificationEmail:next.healthNotificationEmail || ''}));
  const nextLeadPage=()=>refresh(leadPage.nextCursor).catch(report);
- const syncMail=async()=>{if(mutationLock.current)return;mutationLock.current=true;setBusy(true);setError('');const targets=rawAccounts.current.filter(a=>a.hasCredentials);let completed=0,bounces=0,more=0;setNotice('Checking replies and bounce reports…');try{let issues:string[]=[];for(let i=0;i<targets.length;i+=3){await Promise.all(targets.slice(i,i+3).map(async a=>{try{const result=await api('mail/sync',{accountId:a.id,manual:true});bounces+=Number(result.bounces || 0);if(result.more)more++;issues.push(...[result.inboxError,result.sentError,result.bounceError].filter(Boolean).map(e=>a.email+': '+e));}catch(e){issues.push(a.email+': '+(e as Error).message);}finally{completed++;setNotice(`Checking mail: ${completed}/${targets.length} accounts · ${bounces} bounces recorded`);}}));}await refresh();await refreshSending();setNotice(`Manual sync finished: ${completed} accounts checked · ${bounces} new bounced deliveries recorded.${more?' More messages remain; click Sync again to continue.':''}`);if(issues.length)setError(issues.join('; '));}catch(e){report(e);}finally{mutationLock.current=false;setBusy(false);}};
+ const syncMail=async(includeSent=false,retryOnly=false)=>{
+  if(mutationLock.current)return;mutationLock.current=true;setBusy(true);setError('');
+  const targets=rawAccounts.current.filter(a=>a.hasCredentials && ['Connected','IMAP only'].includes(a.connection) && (!retryOnly || failedSyncAccounts.current.has(a.id)));
+  failedSyncAccounts.current=new Set();lastSyncIncludeSent.current=includeSent;setSyncHadErrors(false);
+  let completed=0,bounces=0,more=0,alreadySyncing=0;setNotice(`Checking up to 100 accounts at once · 0/${targets.length} completed`);
+  try{const issues:string[]=[];
+   await runSyncPool(targets,async a=>{
+    try{const result=await api('mail/sync',{accountId:a.id,manual:true,includeSent});
+     bounces+=Number(result.bounces || 0);if(result.more)more++;if(result.busy)alreadySyncing++;
+     const mailErrors=[...new Set([result.inboxError,result.sentError,result.bounceError].filter(Boolean).map((e:string)=>e.replace(/^.*?sync failed/,'Mailbox sync failed')))];if(mailErrors.length){issues.push(a.email+': '+mailErrors.join(' · '));failedSyncAccounts.current.add(a.id);}
+     if(result.threads?.length){
+      const incoming=result.threads.map((t:any)=>mapThread(t,rawAccounts.current));
+      setThreads(prev=>{const merged=new Map(prev.map(t=>[t.id,t]));for(const t of incoming){if(t.id!==selectedThreadRef.current)merged.set(t.id,t);}return [...merged.values()];});
+      if(result.threads.some((t:any)=>t.id===selectedThreadRef.current)){const detail=await api('thread?id='+encodeURIComponent(selectedThreadRef.current));const preview=incoming.find((t:InboxThread)=>t.id===detail.thread.id);setThreads(prev=>prev.map(t=>t.id===detail.thread.id?{...mapThread(detail.thread,rawAccounts.current),inboundDay:preview?.inboundDay || t.inboundDay}:t));}
+     }
+    }catch(e){issues.push(a.email+': '+(e as Error).message);failedSyncAccounts.current.add(a.id);}
+    finally{completed++;setNotice(`Checking mail: ${completed}/${targets.length} accounts · ${bounces} bounces recorded · Up to 100 accounts at once`);}
+   });
+   await refreshSending();
+   if(selectedThreadRef.current)await handleSelectThread(selectedThreadRef.current);
+   setNotice(`Manual sync finished: ${completed} accounts checked · ${bounces} new bounced deliveries recorded.${alreadySyncing?` ${alreadySyncing} already syncing in another session.`:''}${more?' More messages remain; click Sync again to continue.':''}`);
+   if(issues.length){setError(issues.join('; '));setSyncHadErrors(true);}
+  }catch(e){report(e);}finally{mutationLock.current=false;setBusy(false);}
+ };
+
+ const reloadSyncStarted=useRef(false);
+ useEffect(()=>{if(!loaded || unauthorized || usageBlocked || reloadSyncStarted.current)return;const navigation=performance.getEntriesByType('navigation')[0] as PerformanceNavigationTiming|undefined;if(navigation?.type==='reload'){reloadSyncStarted.current=true;void syncMail();}},[loaded,unauthorized,usageBlocked]);
+ const loadNotifications=async(append=false)=>{try{const data=await api('notifications'+(append && notificationCursor?'?before='+encodeURIComponent(notificationCursor):''));setNotifications(prev=>append?[...prev,...data.events]:data.events);setNotificationCursor(data.nextCursor || null);}catch(e){report(e);}};
+ useEffect(()=>{if(loaded && activePage==='notifications')void loadNotifications();},[loaded,activePage]);
+ const deleteNotification=async(id:string)=>{try{await api('notifications/delete',{eventId:id});setNotifications(prev=>prev.filter(n=>n.id!==id));}catch(e){report(e);}};
+ const deleteReadNotifications=async()=>{try{await api('notifications/delete-read',{});await loadNotifications();}catch(e){report(e);}};
+ const markNotificationRead=async(id:string)=>{try{await api('account/health/read',{eventId:id});setNotifications(prev=>prev.map(n=>n.id===id?{...n,readAt:new Date().toISOString()}:n));}catch(e){report(e);}};
 
   const unreadInboxCount = threads.filter((t) => t.unread && !t.archived).length;
   const flaggedSendingCount =
@@ -116,7 +170,7 @@ export default function App() {
     <div className="min-h-screen flex bg-[var(--color-canvas)] text-[var(--color-text)]">
       <Sidebar
         activePage={activePage}
-        onNavigate={setActivePage}
+        onNavigate={page=>{if(page!=='inbox' && window.location.hash.startsWith('#conversation/'))window.history.replaceState({...window.history.state,relayConversation:false},'',window.location.pathname+window.location.search);setActivePage(page);}}
         theme={theme}
         onToggleTheme={toggleTheme}
         workspaces={[activeWorkspace]}
@@ -124,6 +178,7 @@ export default function App() {
         onSelectWorkspace={() => {}}
         unreadInboxCount={unreadInboxCount}
         needsReviewCount={flaggedSendingCount}
+        hasUnreadNotifications={notifications.some(n=>!n.readAt)}
         mobileOpen={mobileMenuOpen}
         onCloseMobile={() => setMobileMenuOpen(false)}
       />
@@ -140,13 +195,14 @@ export default function App() {
         />
 
         <main aria-busy={busy} className="flex-1 px-5 sm:px-10 pt-8 pb-6 max-w-[1260px] w-full mx-auto">
-          {error && <div role="alert" className="mb-5 p-4 rounded-[14px] border border-red-400 text-[var(--color-danger)]">{error}<button className="ml-4 underline" onClick={() => {setError('');setUsageBlocked(false);refresh().catch(report);}}>Retry</button>{unauthorized && <a className="ml-4 underline" href="/login">Sign in</a>}</div>}
+          {error && <div role="alert" className="mb-5 p-4 rounded-[14px] border border-red-400 text-[var(--color-danger)]">{error}<button className="ml-4 underline" onClick={() => {setError('');setUsageBlocked(false);if(syncHadErrors)void syncMail(lastSyncIncludeSent.current,true);else refresh().catch(report);}}>Retry</button>{unauthorized && <a className="ml-4 underline" href="/login">Sign in</a>}</div>}
           {accountAlerts.length>0 && <div role="alert" className="mb-5 p-4 rounded-[14px] border border-amber-400 bg-[var(--color-surface)] text-[13px]"><strong>Sender accounts need attention</strong>{accountAlerts.slice(0,3).map(a=><p key={a.id} className="mt-2 break-words">{a.accountEmail} · {a.status}: {a.message}</p>)}<button className="mt-3 underline" onClick={()=>{setActivePage('accounts');refresh().catch(report);}}>Review accounts</button></div>}
           {notice && <div role="status" className="mb-5 p-4 rounded-[14px] border border-[var(--color-border)] text-[13px]">{notice}{!busy && <button className="ml-3 underline" onClick={()=>setNotice('')}>Dismiss</button>}</div>}
           {!loaded && !error && <p role="status">Loading your workspace…</p>}
           {importProgress && <div role="status" className="mb-5 p-4 rounded-[14px] border border-[var(--color-border)] bg-[var(--color-surface)]"><div className="flex justify-between gap-3 text-[13px] mb-3"><strong>Lead import · {importProgress.phase}</strong><span>{importProgress.phase==='complete'?'100%':importProgress.total?Math.min(99,Math.floor(100*importProgress.completed/importProgress.total))+'%':''}</span></div><progress aria-label="Lead import progress" className="w-full h-2 accent-[var(--color-brand)]" max={importProgress.total || 1} value={importProgress.phase==='complete'?(importProgress.total || 1):importProgress.total===null?undefined:importProgress.completed}/><p className="mt-2 text-[12px] text-[var(--color-muted)]">{importProgress.result?`${importProgress.result.imported} imported · ${importProgress.result.duplicates} duplicates · ${importProgress.result.invalid} invalid`:importProgress.error || 'Saving real import records. You can follow this progress from any section.'}</p>{['complete','error'].includes(importProgress.phase)&&<button className="mt-2 underline text-[12px]" onClick={()=>setImportProgress(null)}>Dismiss</button>}</div>}
-          {busy && <p role="status" className="mb-3 text-[var(--color-muted)]">Saving changes…</p>}
+          {busy && <p role="status" className="mb-3 text-[var(--color-muted)]">Working…</p>}
           <fieldset disabled={busy || usageBlocked} className="min-w-0 contents">
+          {loaded && !unauthorized && activePage==='notifications' && <NotificationsPage onDelete={deleteNotification} onDeleteRead={deleteReadNotifications} events={notifications} hasMore={!!notificationCursor} onRefresh={()=>void loadNotifications()} onLoadMore={()=>void loadNotifications(true)} onMarkRead={markNotificationRead} onReviewAccount={()=>{setActivePage('accounts');refresh().catch(report);}}/>}
           {loaded && !unauthorized && activePage === 'dashboard'  && (
             <DashboardPage leadTotal={leadTotal} campaignCount={campaignCount}
               sendingState={sendingState}
@@ -159,7 +215,7 @@ export default function App() {
             />
           )}
           {loaded && !unauthorized && activePage === 'inbox' && (
-            <InboxPage onSync={syncMail}
+            <InboxPage conversationLoadingId={conversationLoadingId} onLoadOlder={id=>void handleSelectThread(id,true)} onSync={syncMail}
               threads={threads}
               selectedThreadId={selectedThreadId}
               onSelectThread={handleSelectThread}
@@ -175,6 +231,8 @@ export default function App() {
               sendingState={sendingState}
               accounts={accounts}
               onToggleRunStatus={handleToggleRunStatus}
+              onCancel={()=>action(async()=>{await api('campaign/cancel',{campaignId:sendingState.id});setNotice('Campaign cancelled. Import new leads and initiate a new campaign when ready.');})}
+              onRebalance={()=>action(async()=>{const result=await api('campaign/rebalance',{campaignId:sendingState.id});setNotice(`Queued work updated: ${result.queued} emails across ${result.accounts} accounts. Resume queued when ready.`);})}
               onInitiateSending={handleInitiateSending}
               onResolveRecord={handleResolveRecord}
             />

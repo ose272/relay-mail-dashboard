@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { Menu } from 'lucide-react';
+import { Menu, Bell } from 'lucide-react';
 import { NavPage, WorkspaceProfile } from '../../types/maildash';
 import {
   AccountIcon,
@@ -27,6 +27,7 @@ const PAGE_META: Record<
   NavPage,
   { label: string; icon: React.ComponentType<{ size?: number; className?: string }> }
 > = {
+  notifications:{label:'Notifications',icon:Bell},
   dashboard: { label: 'Dashboard', icon: DashboardIcon },
   inbox: { label: 'Inbox', icon: InboxIcon },
   sending: { label: 'Sending', icon: SendIcon },

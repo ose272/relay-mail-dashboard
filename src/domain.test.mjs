@@ -163,7 +163,7 @@ test('body-only campaign messages omit the subject header',()=>{
  assert.equal(Object.hasOwn(bodyOnly,'subject'),false);
  assert.equal(createCampaignMessageOptions({...common,subject:'A quick note'}).subject,'A quick note');
 });
-test('scheduled sender processes at most 750 messages with fifty concurrent requests per tick',async()=>{
+test('scheduled sender processes at most 2250 messages with 150 concurrent requests per tick',async()=>{
  const originalFetch=globalThis.fetch;
  let calls=0,active=0,maximumActive=0;
  globalThis.fetch=async()=>{
@@ -177,8 +177,8 @@ test('scheduled sender processes at most 750 messages with fifty concurrent requ
    DASHBOARD_API_URL:'https://dashboard.example',
    BACKGROUND_CRON_SECRET:'test-only-secret'
   });
-  assert.equal(calls,750);
-  assert.equal(maximumActive,50);
+  assert.equal(calls,2250);
+  assert.equal(maximumActive,150);
  }finally{
   globalThis.fetch=originalFetch;
  }
@@ -318,15 +318,15 @@ test('scheduler bounds contention retries and never retries an unconfirmed reque
  const originalFetch=globalThis.fetch;let calls=0;
  try{
  globalThis.fetch=async()=>{calls++;return new Response(JSON.stringify({busy:true}),{headers:{'Content-Type':'application/json'}});};
- await scheduledSender.scheduled({},{DASHBOARD_API_URL:'https://dashboard.example',BACKGROUND_CRON_SECRET:'local-only'});assert.equal(calls,1500);
- calls=0;globalThis.fetch=async()=>{calls++;throw new Error('No confirmation');};await scheduledSender.scheduled({},{DASHBOARD_API_URL:'https://dashboard.example',BACKGROUND_CRON_SECRET:'local-only'});assert.ok(calls<=50);
+ await scheduledSender.scheduled({},{DASHBOARD_API_URL:'https://dashboard.example',BACKGROUND_CRON_SECRET:'local-only'});assert.equal(calls,4500);
+ calls=0;globalThis.fetch=async()=>{calls++;throw new Error('No confirmation');};await scheduledSender.scheduled({},{DASHBOARD_API_URL:'https://dashboard.example',BACKGROUND_CRON_SECRET:'local-only'});assert.ok(calls<=150);
  }finally{globalThis.fetch=originalFetch;}
 });
 
 
 test('scheduler continues definite deferrals but stops on an embedded streamed error',async()=>{
  const originalFetch=globalThis.fetch;let calls=0;
- try{globalThis.fetch=async()=>{calls++;return new Response(JSON.stringify({deferred:true,httpStatus:200}));};await scheduledSender.scheduled({},{DASHBOARD_API_URL:'https://dashboard.example',BACKGROUND_CRON_SECRET:'local-only'});assert.equal(calls,750);
- calls=0;globalThis.fetch=async()=>{calls++;return new Response(JSON.stringify({error:'Held',httpStatus:503}));};await scheduledSender.scheduled({},{DASHBOARD_API_URL:'https://dashboard.example',BACKGROUND_CRON_SECRET:'local-only'});assert.ok(calls<=50);
+ try{globalThis.fetch=async()=>{calls++;return new Response(JSON.stringify({deferred:true,httpStatus:200}));};await scheduledSender.scheduled({},{DASHBOARD_API_URL:'https://dashboard.example',BACKGROUND_CRON_SECRET:'local-only'});assert.equal(calls,2250);
+ calls=0;globalThis.fetch=async()=>{calls++;return new Response(JSON.stringify({error:'Held',httpStatus:503}));};await scheduledSender.scheduled({},{DASHBOARD_API_URL:'https://dashboard.example',BACKGROUND_CRON_SECRET:'local-only'});assert.ok(calls<=150);
  }finally{globalThis.fetch=originalFetch;}
 });

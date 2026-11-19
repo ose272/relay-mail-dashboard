@@ -1,3 +1,6 @@
+import {cancelCampaign} from '../../src/campaign-control.mjs';
+import {rebalanceCampaign} from '../../src/rebalance.mjs';
+import {mergeConversation} from '../../src/conversations.mjs';
 import {sendFailureHealth} from '../../src/send-health.mjs';
 import {recordBounceReports} from '../../src/bounces.mjs';
 import { meteredD1, usageBudgets } from '../_lib/usage-budget.js';
@@ -7,7 +10,7 @@ import { expireStaleDeliveriesSql } from '../../src/send-selection.mjs';
 import { allocateRepeatedCampaign, assignScoutingPlans, assessAccountHealth, parseLeads } from '../../src/domain.mjs';
 import { eligibleLeadsSql } from '../../src/sending-query.mjs';
 import { decryptCredential, encryptCredential } from '../_lib/credentials.js';
-import { checkGmailHealth, fetchRecentInbox, fetchRecentBounces, fetchRecentSent, sendCampaignMessage, sendThreadReply, verifyGmailCredentials } from '../_lib/gmail.js';
+import { checkGmailHealth, fetchAccountMail, fetchGmailConversation, sendCampaignMessage, sendThreadReply, verifyGmailCredentials } from '../_lib/gmail.js';
 
 const emailPattern = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 const encoder = new TextEncoder();
@@ -226,15 +229,16 @@ function encodeLeadCursor(lead) {
 
 async function loadThread(db, id) {
   const [thread, messages] = await Promise.all([
-    db.prepare('SELECT id, name, store, email, subject, account_id, unread, status, starred, archived, tag FROM threads WHERE id = ?').bind(id).first(),
-    db.prepare('SELECT id, thread_id, direction, body, time, send_state FROM messages WHERE thread_id = ? ORDER BY time, id').bind(id).all()
+    db.prepare('SELECT id, name, store, email, subject, account_id, unread, status, starred, archived, tag,provider_history_before_uid FROM threads WHERE id = ?').bind(id).first(),
+    db.prepare('SELECT id, thread_id, direction, body, time, send_state,sender_email,sender_name FROM messages WHERE thread_id = ? ORDER BY time, id').bind(id).all()
   ]);
   if (!thread) return null;
   return {
     id: thread.id, name: thread.name, store: thread.store, email: thread.email,
     starred: Boolean(thread.starred), archived: Boolean(thread.archived), tag: thread.tag,
+    historyBeforeUid:thread.provider_history_before_uid,
     subject: thread.subject, accountId: thread.account_id, unread: Boolean(thread.unread), status: thread.status,
-    messages: resultRows(messages).map(message => ({ direction: message.direction, body: message.body, time: message.time, sendState: message.send_state }))
+    messages: resultRows(messages).map(message => ({ id:message.id,direction: message.direction, body: message.body, time: message.time, sendState: message.send_state,senderEmail:message.sender_email,senderName:message.sender_name }))
   };
 }
 
@@ -263,14 +267,14 @@ async function loadState(db, options = {}) {
       FROM leads`).first(),
     db.prepare('SELECT id, name, subject, body, archived_at FROM templates ORDER BY created_at, id').all(),
     db.prepare(`SELECT id, name, template_id, status, created_at, remaining, days, allocation_json,
-      planned_sends, sent_count, pending_count, uncertain_count, failed_count, failure_codes
+      planned_sends, sent_count, pending_count, uncertain_count, failed_count, failure_codes,cancelled_count
       FROM campaigns ORDER BY created_at DESC`).all(),
     db.prepare(`SELECT thread_id, direction, body, time, send_state FROM messages
       WHERE direction = 'in' AND time >= ?
       ORDER BY time DESC, id DESC LIMIT ?`).bind(todayStart, inboxSummaryLimit).all(),
     db.prepare(`
       SELECT e.id, e.account_id, a.email AS account_email, e.status, e.code, e.message,
-        e.created_at, e.resolved_at, e.read_at, e.email_status, e.email_sent_at,
+        e.created_at, e.resolved_at, e.read_at,e.deleted_at, e.email_status, e.email_sent_at,
         e.email_sender, e.email_error
       FROM account_health_events e JOIN accounts a ON a.id = e.account_id
       ORDER BY e.created_at DESC LIMIT 50
@@ -330,6 +334,7 @@ async function loadState(db, options = {}) {
       createdAt: event.created_at,
       resolvedAt: event.resolved_at,
       readAt: event.read_at,
+      deletedAt:event.deleted_at,
       emailStatus: event.email_status,
       emailSentAt: event.email_sent_at,
       emailSender: event.email_sender,
@@ -377,6 +382,7 @@ async function loadState(db, options = {}) {
         pending: Number(campaign.pending_count || 0),
         uncertain: Number(campaign.uncertain_count || 0),
         failed: Number(campaign.failed_count || 0),
+        cancelled:Number(campaign.cancelled_count || 0),
         failureCodes: String(campaign.failure_codes || '').split(',').filter(Boolean)
       };
     }),
@@ -401,7 +407,7 @@ async function loadState(db, options = {}) {
 async function loadSendingStatus(db, summary = false) {
   const result = await db.prepare(`
     SELECT id, status, created_at, planned_sends, sent_count, pending_count,
-      uncertain_count, failed_count, failure_codes, in_flight_count, next_send_at
+      uncertain_count, failed_count, failure_codes,cancelled_count, in_flight_count, next_send_at
     FROM campaigns
     WHERE name = 'Direct send'
     ORDER BY created_at DESC
@@ -416,6 +422,7 @@ async function loadSendingStatus(db, summary = false) {
     pending: Number(run.pending_count || 0),
     uncertain: Number(run.uncertain_count || 0),
     failed: Number(run.failed_count || 0),
+    cancelled:Number(run.cancelled_count || 0),
     inFlight: Number(run.in_flight_count || 0),
     nextSendAt: run.next_send_at,
     failureCodes: String(run.failure_codes || '').split(',').filter(Boolean),
@@ -930,6 +937,16 @@ async function handlePost(request, env, path) {
     });
   }
 
+  if(path==='/api/notifications/delete'){
+    if(typeof body.eventId!=='string')throw new HttpError(400,'Choose a notification.');
+    await db.prepare('UPDATE account_health_events SET deleted_at=COALESCE(deleted_at,?) WHERE id=?').bind(new Date().toISOString(),body.eventId).run();
+    return jsonResponse(200,{ok:true});
+  }
+  if(path==='/api/notifications/delete-read'){
+    const result=await db.prepare('UPDATE account_health_events SET deleted_at=? WHERE deleted_at IS NULL AND read_at IS NOT NULL').bind(new Date().toISOString()).run();
+    return jsonResponse(200,{ok:true,deleted:result.meta?.changes || 0});
+  }
+
   if (path === '/api/account/health/read') {
     if (typeof body.eventId !== 'string') throw new HttpError(400, 'Choose a health notification.');
     const result = await db.prepare(`
@@ -1169,6 +1186,30 @@ async function handlePost(request, env, path) {
     return jsonResponse(200, { ok: true });
   }
 
+  if(path==='/api/mail/conversation'){
+    if(body.manual!==true)throw new HttpError(400,'Open or refresh a conversation to sync its Gmail history.');
+    if(typeof body.threadId!=='string')throw new HttpError(400,'Choose a conversation.');
+    const thread=await db.prepare('SELECT id,account_id,provider_thread_id,provider_uid_validity,provider_last_uid,provider_history_before_uid FROM threads WHERE id=?').bind(body.threadId).first();
+    if(!thread)throw new HttpError(404,'Conversation not found.');
+    const account=await db.prepare('SELECT id,email,connection,credential_ciphertext FROM accounts WHERE id=?').bind(thread.account_id).first();
+    if(!account?.credential_ciphertext || !['Connected','IMAP only'].includes(account.connection))throw new HttpError(409,'Reconnect the sending account to sync this conversation.');
+    const leaseToken=crypto.randomUUID(),now=new Date().toISOString();
+    const lease=await db.prepare('UPDATE accounts SET sync_lease_token=?,sync_lease_until=? WHERE id=? AND (sync_lease_until IS NULL OR sync_lease_until<=?)').bind(leaseToken,new Date(Date.now()+180000).toISOString(),account.id,now).run();
+    if(!lease.meta?.changes)return jsonResponse(200,{ok:true,busy:true,thread:await loadThread(db,thread.id)});
+    try{
+      const original=await db.prepare("SELECT message_id FROM messages WHERE thread_id=? AND message_id<>'' ORDER BY time DESC LIMIT 1").bind(thread.id).first();
+      const password=await decryptCredential(account.email,account.credential_ciphertext,env.CREDENTIALS_ENCRYPTION_KEY);
+      let history;
+      try{history=await fetchGmailConversation(account.email,password,{providerThreadId:thread.provider_thread_id,messageId:original?.message_id,beforeUid:body.loadOlder===true?Number(thread.provider_history_before_uid || 0):0,afterUid:Number(thread.provider_last_uid || 0),uidValidity:thread.provider_uid_validity});}
+      catch(error){throw new HttpError(502,mailSyncError('Conversation history',error),'MAIL_SYNC_FAILED');}
+      for(const message of history.messages){if(message.fromAddress.toLowerCase()===account.email.toLowerCase())await reconcileUncertainCampaignDelivery(db,message);}
+      const merged=await mergeConversation(db,thread,account,history.messages);
+      const before=body.loadOlder===true?history.beforeUid:history.more?Math.max(Number(thread.provider_history_before_uid || 0),Number(history.beforeUid || 0)):thread.provider_history_before_uid;
+      await db.prepare('UPDATE threads SET provider_thread_id=?,provider_uid_validity=?,provider_last_uid=?,provider_history_before_uid=? WHERE id=?').bind(history.providerThreadId,history.uidValidity,history.lastUid,before || null,thread.id).run();
+      return jsonResponse(200,{ok:true,thread:await loadThread(db,thread.id),imported:merged.imported,retiredThreadIds:await Promise.all(merged.movedThreadIds.map(async id=>(await db.prepare("SELECT 1 FROM messages WHERE thread_id=? AND direction='in' AND time>=? LIMIT 1").bind(id,startOfLagosDayIso()).first())?null:id)).then(ids=>ids.filter(Boolean))});
+    }finally{await db.prepare('UPDATE accounts SET sync_lease_token=NULL,sync_lease_until=NULL WHERE id=? AND sync_lease_token=?').bind(account.id,leaseToken).run().catch(()=>{});}
+  }
+
   if (path === '/api/mail/sync') {
     if(body.manual !== true) throw new HttpError(400, 'Automatic mailbox checks are disabled. Refresh the dashboard and click Sync connected inboxes.');
     if (typeof body.accountId !== 'string') throw new HttpError(400, 'Choose a connected account to sync.');
@@ -1180,6 +1221,11 @@ async function handlePost(request, env, path) {
     if (!account?.credential_ciphertext || !['Connected', 'IMAP only'].includes(account.connection)) {
       throw new HttpError(409, 'Reconnect this account before syncing its inbox.');
     }
+    const leaseToken=crypto.randomUUID(),leaseNow=new Date().toISOString();
+    const lease=await db.prepare('UPDATE accounts SET sync_lease_token=?,sync_lease_until=? WHERE id=? AND (sync_lease_until IS NULL OR sync_lease_until<=?)')
+      .bind(leaseToken,new Date(Date.now()+180000).toISOString(),account.id,leaseNow).run();
+    if(!lease.meta?.changes)return jsonResponse(200,{ok:true,busy:true,imported:0,checked:0,bounces:0});
+    try{
     const [hasLeads, hasThreads] = await Promise.all([
       db.prepare('SELECT 1 FROM leads LIMIT 1').first(),
       db.prepare('SELECT 1 FROM threads WHERE account_id = ? LIMIT 1').bind(account.id).first()
@@ -1188,26 +1234,18 @@ async function handlePost(request, env, path) {
       return jsonResponse(200, { ok: true, email: account.email, imported: 0, checked: 0 });
     }
     const password = await decryptCredential(account.email, account.credential_ciphertext, env.CREDENTIALS_ENCRYPTION_KEY);
-    let incoming = null, sent = null, bounceInbox = null, inboxError = null, sentError = null, bounceError = null;
-    try {
-      incoming = await fetchRecentInbox(account.email, password, {
-        uid: account.last_sync_uid,
-        uidValidity: account.last_sync_uid_validity
-      });
-    } catch (error) {
-      inboxError = mailSyncError('Inbox', error);
-    }
-    try {
-      sent = await fetchRecentSent(account.email, password, {
-        uid: account.last_sent_sync_uid,
-        uidValidity: account.last_sent_sync_uid_validity
-      });
-    } catch (error) {
-      sentError = mailSyncError('Sent folder', error);
-    }
-    try {
-      bounceInbox=await fetchRecentBounces(account.email,password,{uid:account.last_bounce_sync_uid,uidValidity:account.last_bounce_sync_uid_validity});
-    }catch(error){bounceError=mailSyncError('Bounce reports',error);}
+    const uncertain=await db.prepare("SELECT 1 FROM campaign_deliveries WHERE account_id=? AND status='uncertain' LIMIT 1").bind(account.id).first();
+    let fetched;
+    try{fetched=await fetchAccountMail(account.email,password,{
+      inbox:{uid:account.last_sync_uid,uidValidity:account.last_sync_uid_validity},
+      bounces:{uid:account.last_bounce_sync_uid,uidValidity:account.last_bounce_sync_uid_validity},
+      sent:{uid:account.last_sent_sync_uid,uidValidity:account.last_sent_sync_uid_validity}
+    },{includeSent:body.includeSent===true || Boolean(uncertain)});}
+    catch(error){throw new HttpError(502,mailSyncError('Mailbox connection',error),'MAIL_SYNC_FAILED');}
+    const {incoming,sent,bounceInbox}=fetched;
+    const inboxError=fetched.inboxError?mailSyncError('Inbox',fetched.inboxError):null;
+    const bounceError=fetched.bounceError?mailSyncError('Bounce reports',fetched.bounceError):null;
+    const sentError=fetched.sentError?mailSyncError('Sent folder',fetched.sentError):null;
     if (!incoming && !sent && !bounceInbox) {
       throw new HttpError(502, [inboxError, sentError, bounceError].filter(Boolean).join(' · '), 'MAIL_SYNC_FAILED');
     }
@@ -1233,12 +1271,12 @@ async function handlePost(request, env, path) {
     const changedThreadIds = new Set();
     for (const message of relevantMessages) {
       const externalId = `${account.id}:${message.externalId}`;
-      const duplicate = await db.prepare('SELECT id FROM messages WHERE external_id = ?').bind(externalId).first();
+      const duplicate = message.messageId?await db.prepare('SELECT m.id FROM messages m JOIN threads t ON t.id=m.thread_id WHERE t.account_id=? AND m.message_id=? LIMIT 1').bind(account.id,message.messageId).first():await db.prepare('SELECT id FROM messages WHERE external_id=?').bind(externalId).first();
       if (duplicate) continue;
 
       const references = [...new Set([message.inReplyTo, ...message.references].filter(Boolean))].slice(-20);
-      let thread;
-      if (references.length) {
+      let thread=message.providerThreadId?await db.prepare('SELECT id,subject FROM threads WHERE account_id=? AND provider_thread_id=? LIMIT 1').bind(account.id,message.providerThreadId).first():null;
+      if (!thread && references.length) {
         const placeholders = references.map(() => '?').join(', ');
         thread = await db.prepare(`
           SELECT t.id, t.subject FROM threads t
@@ -1249,10 +1287,10 @@ async function handlePost(request, env, path) {
       }
       if (!thread && message.fromAddress) {
         const candidates = resultRows(await db.prepare(`
-          SELECT id, subject FROM threads WHERE account_id = ? AND email = ?
+          SELECT id, subject,provider_thread_id FROM threads WHERE account_id = ? AND email = ?
           ORDER BY id DESC LIMIT 30
         `).bind(account.id, message.fromAddress).all());
-        thread = candidates.find(candidate => normalizeSubject(candidate.subject) === normalizeSubject(message.subject));
+        thread = candidates.find(candidate => normalizeSubject(candidate.subject) === normalizeSubject(message.subject) && (!message.providerThreadId || !candidate.provider_thread_id || candidate.provider_thread_id===message.providerThreadId));
       }
 
       const threadId = thread?.id || crypto.randomUUID();
@@ -1264,6 +1302,7 @@ async function handlePost(request, env, path) {
       } else {
         await db.prepare("UPDATE threads SET unread = 1, status = 'Needs reply' WHERE id = ?").bind(threadId).run();
       }
+      if(message.providerThreadId)await db.prepare('UPDATE threads SET provider_thread_id=? WHERE id=? AND provider_thread_id IS NULL').bind(message.providerThreadId,threadId).run();
       const result = await db.prepare(`
         INSERT OR IGNORE INTO messages (
           id, thread_id, direction, body, time, message_id, in_reply_to,
@@ -1382,11 +1421,18 @@ async function handlePost(request, env, path) {
       UPDATE accounts SET last_sync_at = ? WHERE id = ?
     `).bind(new Date().toISOString(), account.id));
     await db.batch(checkpointStatements);
+    const changedThreads=[];
+    for(const id of changedThreadIds){
+      const thread=await db.prepare('SELECT id,name,store,email,subject,account_id,unread,status,starred,archived,tag FROM threads WHERE id=?').bind(id).first();
+      const latest=await db.prepare("SELECT direction,body,time,send_state FROM messages WHERE thread_id=? AND direction='in' AND time>=? ORDER BY time DESC LIMIT 1").bind(id,startOfLagosDayIso()).first();
+      if(thread && latest)changedThreads.push({...thread,accountId:thread.account_id,inboundDay:new Intl.DateTimeFormat('en-CA',{timeZone:'Africa/Lagos',year:'numeric',month:'2-digit',day:'2-digit'}).format(new Date(latest.time)),messages:[{direction:latest.direction,body:latest.body,time:latest.time,sendState:latest.send_state}]});
+    }
     return jsonResponse(200, {
       ok: true,
       email: account.email,
       imported,
       changedThreadIds: [...changedThreadIds].slice(0, 100),
+      threads:changedThreads,
       checked: (incoming?.checked || 0) + (sent?.checked || 0) + (bounceInbox?.checked || 0),
       more: Boolean(incoming?.more || sent?.more || bounceInbox?.more),
       bounces,
@@ -1394,6 +1440,19 @@ async function handlePost(request, env, path) {
       inboxError,
       sentError
     });
+    }finally{await db.prepare('UPDATE accounts SET sync_lease_token=NULL,sync_lease_until=NULL WHERE id=? AND sync_lease_token=?').bind(account.id,leaseToken).run().catch(()=>{});}
+  }
+
+  if(path==='/api/campaign/cancel'){
+    if(typeof body.campaignId!=='string')throw new HttpError(400,'Choose a campaign.');
+    try{return jsonResponse(200,{ok:true,...await cancelCampaign(db,body.campaignId)});}
+    catch(error){if(/Campaign not found|cannot be cancelled|campaign changed/i.test(error.message))throw new HttpError(409,error.message);throw error;}
+  }
+
+  if(path==='/api/campaign/rebalance'){
+    if(typeof body.campaignId!=='string')throw new HttpError(400,'Choose a paused campaign.');
+    try{return jsonResponse(200,{ok:true,...await rebalanceCampaign(db,body.campaignId)});}
+    catch(error){if(/Pause the campaign|No eligible|cannot be redistributed|no scouting plan|campaign changed|no queued/i.test(error.message))throw new HttpError(409,error.message);throw error;}
   }
 
   if (path === '/api/campaign/pause') {
@@ -1453,6 +1512,7 @@ async function handlePost(request, env, path) {
       `).bind(deliveryId).first()
       : null;
     if (!delivery) throw new HttpError(404, 'Unconfirmed delivery not found or already resolved.');
+    if(await db.prepare("SELECT 1 FROM campaigns WHERE id=? AND status='Cancelled'").bind(delivery.campaign_id).first())throw new HttpError(409,'A cancelled campaign cannot retry deliveries. Sync the Sent folder to resolve this unconfirmed attempt.');
     await db.batch([
       db.prepare(`
         UPDATE campaign_deliveries
@@ -1622,7 +1682,7 @@ async function handlePost(request, env, path) {
         await db.batch([
           db.prepare(`
             UPDATE campaign_deliveries
-            SET status = 'queued', retry_after = ?, last_error = ?
+            SET status = CASE WHEN EXISTS(SELECT 1 FROM campaigns c WHERE c.id=campaign_deliveries.campaign_id AND c.status='Cancelled') THEN 'failed' ELSE 'queued' END, retry_after = ?, last_error = ?
             WHERE id = ? AND status = 'sending'
           `).bind(retryAt, diagnostic, delivery.id),
           db.prepare("UPDATE accounts SET send_retry_after=MAX(COALESCE(send_retry_after,''),?) WHERE id=?").bind(retryAt,delivery.account_id),
@@ -1831,6 +1891,13 @@ async function handleRequest({ request, env }) {
       if (!thread) throw new HttpError(404, 'Conversation not found.');
       return jsonResponse(200, { thread });
     }
+    if(request.method==='GET' && path==='/api/notifications'){
+      const before=url.searchParams.get('before');
+      const cursor=before?await env.DB.prepare('SELECT created_at,id FROM account_health_events WHERE id=?').bind(before).first():null;
+      const sql=`SELECT e.id,e.account_id AS accountId,a.email AS accountEmail,e.status,e.code,e.message,e.created_at AS createdAt,e.resolved_at AS resolvedAt,e.read_at AS readAt FROM account_health_events e JOIN accounts a ON a.id=e.account_id WHERE e.deleted_at IS NULL ${cursor?'AND (e.created_at,e.id)<(?,?)':''} ORDER BY e.created_at DESC,e.id DESC LIMIT 51`;
+      const rows=resultRows(await (cursor?env.DB.prepare(sql).bind(cursor.created_at,cursor.id):env.DB.prepare(sql)).all());
+      return jsonResponse(200,{events:rows.slice(0,50),nextCursor:rows.length>50?rows[49].id:null});
+    }
     if (request.method === 'GET' && path === '/api/sending/status') {
       const runs = await loadSendingStatus(env.DB, url.searchParams.get('summary') === '1');
       let deliveries = [];
@@ -1877,7 +1944,7 @@ async function handleRequest({ request, env }) {
 export async function onRequest(context) {
  const {request,env}=context,url=new URL(request.url);
  // Old browser timers must not cause even a usage-table lookup.
- if(request.method==='POST' && url.pathname==='/api/mail/sync'){
+ if(request.method==='POST' && ['/api/mail/sync','/api/mail/conversation'].includes(url.pathname)){
    const body=await request.clone().json().catch(()=>({}));
    if(body.manual!==true)return jsonResponse(400,{error:'Automatic mailbox checks are disabled. Refresh the dashboard and click Sync connected inboxes.'});
  }

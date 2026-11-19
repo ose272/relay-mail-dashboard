@@ -24,6 +24,8 @@ import {
 interface SendingPageProps {
   sendingState: SendingState;
   accounts: ConnectedAccount[];
+  onCancel:()=>Promise<unknown>;
+  onRebalance:()=>Promise<unknown>;
   onToggleRunStatus: () => Promise<unknown>;
   onInitiateSending: (payload: {
     runTitle: string;
@@ -40,7 +42,7 @@ export const SendingPage: React.FC<SendingPageProps> = ({
   sendingState,
   accounts,
   onToggleRunStatus,
-  onInitiateSending,
+  onInitiateSending, onRebalance, onCancel,
   onResolveRecord,
 }) => {
   const [sortLatestFirst, setSortLatestFirst] = useState(true);
@@ -77,6 +79,7 @@ export const SendingPage: React.FC<SendingPageProps> = ({
   );
 
   const [submitting,setSubmitting]=useState(false);
+  const [cancelOpen,setCancelOpen]=useState(false),[cancelling,setCancelling]=useState(false);
   const handleCreateSend=async(e:React.FormEvent)=>{e.preventDefault();if(submitting)return;setSubmitting(true);try{await onInitiateSending({runTitle:'Direct send',sender:'',subject:'',recipients:[]});setInitiateModalOpen(false);}catch{}finally{setSubmitting(false);}};
   const renderResultBadge = (result: DeliveryResultStatus) => {
     switch (result) {
@@ -93,6 +96,8 @@ export const SendingPage: React.FC<SendingPageProps> = ({
 
   return (
     <div className="space-y-6">
+      {cancelOpen && <ModalShell open={cancelOpen} title="Cancel this campaign?" subtitle={`Stop the remaining ${Math.max(0,sendingState.queuedCount-(sendingState.inFlight || 0))} queued emails. Completed sends remain in history.`} onClose={()=>{if(!cancelling)setCancelOpen(false);}}><div className="flex justify-end gap-3"><PortfolioPillButton variant="secondary" disabled={cancelling} onClick={()=>setCancelOpen(false)}>Keep campaign</PortfolioPillButton><PortfolioPillButton variant="primary" disabled={cancelling} onClick={async()=>{setCancelling(true);try{await onCancel();setCancelOpen(false);}catch{}finally{setCancelling(false);}}}>{cancelling?'Cancelling…':'Confirm cancellation'}</PortfolioPillButton></div></ModalShell>}
+      {sendingState.backendStatus==='Cancelled' && <p role="status" className="text-[13px] text-[var(--color-muted)]">Campaign cancelled · {sendingState.cancelledCount || 0} queued emails stopped. You can import leads and initiate a new campaign.</p>}
       {/* Page Title & Primary Action */}
       <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
         <div>
@@ -195,8 +200,8 @@ export const SendingPage: React.FC<SendingPageProps> = ({
             </div>
           </div>
 
-          <div className="flex items-center gap-3 shrink-0">
-            {!sendingState.id ? <StatusBadge label="NO CAMPAIGN" tone="neutral" /> : sendingState.status === 'completed' ? <StatusBadge label="COMPLETE" tone="success" /> : sendingState.status === 'paused' ? (
+          <div className="flex flex-wrap items-center gap-3 shrink-0">
+            {!sendingState.id ? <StatusBadge label="NO CAMPAIGN" tone="neutral" /> : sendingState.status === 'completed' ? <StatusBadge label={sendingState.backendStatus==='Cancelled'?'CANCELLED':'COMPLETE'} tone={sendingState.backendStatus==='Cancelled'?'neutral':'success'} /> : sendingState.status === 'paused' ? (
               <StatusBadge label="PAUSED" tone="warning" icon="pause" size="md" />
             ) : (
               <StatusBadge label={sendingState.backendStatus==='Scheduled'?'SCHEDULED':'RUNNING'} tone="success" icon="check" size="md" />
@@ -211,12 +216,14 @@ export const SendingPage: React.FC<SendingPageProps> = ({
             >
               {sendingState.status === 'paused' ? 'Resume queued' : 'Pause'}
             </PortfolioPillButton>}
+            {sendingState.id && sendingState.status!=='completed' && <PortfolioPillButton variant="secondary" size="md" onClick={()=>setCancelOpen(true)}>Cancel campaign</PortfolioPillButton>}
           </div>
         </div>
 
         {/* Panel Body */}
         <div className="p-6 space-y-6">
           {sendingState.id && sendingState.sentCount===0 && sendingState.queuedCount>0 && <p className="text-[13px] text-[var(--color-muted)]">No messages have been confirmed sent yet. Delivery progress increases only after the sender confirms a send.</p>}
+          {sendingState.id && sendingState.status==='paused' && !sendingState.needsReviewCount && sendingState.queuedCount>0 && <div className="flex flex-col sm:flex-row sm:items-center gap-3 text-[12px] text-[var(--color-muted)]"><PortfolioPillButton variant="secondary" onClick={onRebalance}>Use newly connected accounts</PortfolioPillButton><span>Redistribute queued work across connected accounts before resuming.</span></div>}
           {/* Delivery Progress */}
           <div className="space-y-2.5">
             <div className="flex items-center justify-between gap-4">

@@ -19,7 +19,7 @@ export default {
           });
           const result = await response.json();
           if (!response.ok || Number(result.httpStatus || 200) >= 400 || result.error) {
-            console.error('Background send tick was rejected:', result.httpStatus || response.status, result.error || '');
+            if(!stopped)console.error('Background send tick was rejected:', result.httpStatus || response.status, result.error || '');
             stopped = true; return;
           }
           if (result.busy) {
@@ -30,7 +30,7 @@ export default {
           if (result.sent !== true && result.failed !== true && result.deferred !== true) { stopped = true; return; }
         } catch {
           // Never retry a request with unknown delivery confirmation.
-          console.error('Background send tick did not return confirmation; stopping this invocation.');
+          if(!stopped)console.error('Background send tick did not return confirmation; stopping this invocation.');
           stopped = true; return;
         }
       }
