@@ -3,12 +3,18 @@
 export const READ_BUDGET = 4_000_000;
 export const WRITE_BUDGET = 80_000;
 
-export function meteredD1(raw, initial = {rows_read: 0, rows_written: 0}) {
+export function usageBudgets(env = {}) {
+  return env.APP_USAGE_TIER === 'paid'
+    ? {reads: 500_000_000, writes: 1_000_000}
+    : {reads: READ_BUDGET, writes: WRITE_BUDGET};
+}
+
+export function meteredD1(raw, initial = {rows_read: 0, rows_written: 0}, budgets = usageBudgets()) {
   let reads = 0, writes = 0;
   const rawStatement = Symbol('rawStatement');
   const remainingBudget = () => ({
-    reads: READ_BUDGET - Number(initial.rows_read || 0) - reads,
-    writes: WRITE_BUDGET - Number(initial.rows_written || 0) - writes
+    reads: budgets.reads - Number(initial.rows_read || 0) - reads,
+    writes: budgets.writes - Number(initial.rows_written || 0) - writes
   });
   const record = result => {
     reads += Number(result.meta?.rows_read || 0);

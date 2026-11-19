@@ -1,4 +1,4 @@
-import { meteredD1, READ_BUDGET, WRITE_BUDGET } from '../_lib/usage-budget.js';
+import { meteredD1, usageBudgets } from '../_lib/usage-budget.js';
 import { selectReadyDelivery, claimReadyDeliverySql, seedSenderQueue } from '../../src/ready-senders.mjs';
 import { SEND_CONCURRENCY } from '../../src/send-limits.mjs';
 import { expireStaleDeliveriesSql } from '../../src/send-selection.mjs';
@@ -1867,7 +1867,8 @@ export async function onRequest(context) {
    if(/daily row read limit/i.test(String(error?.message||'')))return jsonResponse(503,{error:'Cloudflare D1 daily read quota is exhausted. It resets at 1:00 AM Africa/Lagos.',code:'D1_READ_LIMIT',resetAt});
    return jsonResponse(503,{error:'Database usage accounting is unavailable. Sending is held.',code:'APP_USAGE_UNAVAILABLE'});
  }
- if(initial.rows_read>=READ_BUDGET || initial.rows_written>=WRITE_BUDGET){
+ const budgets=usageBudgets(env);
+ if(initial.rows_read>=budgets.reads || initial.rows_written>=budgets.writes){
    if(url.pathname==='/api/internal/send-tick'){
      await env.DB.prepare(`UPDATE campaigns SET status='Scheduled',next_send_at=? WHERE name='Direct send'
        AND status IN ('Sending','Scheduled','Paused') AND (next_send_at IS NULL OR next_send_at<?)`)
@@ -1875,7 +1876,7 @@ export async function onRequest(context) {
    }
    return jsonResponse(503,{error:'The application usage safety budget is reached. Sending is held until the next daily reset.',code:'APP_USAGE_BUDGET',resetAt});
  }
- const meter=meteredD1(env.DB,initial);
+ const meter=meteredD1(env.DB,initial,budgets);
  const response=await handleRequest({...context,env:{...env,DB:meter.db}});
  const finish=()=>meter.flush(day).catch(()=>{});
  if(response.headers.get('Content-Type')?.includes('application/x-ndjson') && response.body){

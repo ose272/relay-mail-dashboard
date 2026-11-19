@@ -99,3 +99,6 @@ node node_modules/wrangler/bin/wrangler.js triggers deploy --config wrangler.sch
 
 Keep production credentials and bindings in ignored configuration/secrets. No
 credential files, secret values or production database exports belong in Git.
+
+
+Paid-plan deployment: set the non-secret Pages variable APP_USAGE_TIER=paid after upgrading. Application daily guards become 500 million reads and 1 million writes; defaults retain Free guards. These cover this API only and are not a Cloudflare billing cap. Migrations 0026 and 0027 were applied after the November 19 upgrade.
