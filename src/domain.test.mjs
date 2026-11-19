@@ -163,7 +163,7 @@ test('body-only campaign messages omit the subject header',()=>{
  assert.equal(Object.hasOwn(bodyOnly,'subject'),false);
  assert.equal(createCampaignMessageOptions({...common,subject:'A quick note'}).subject,'A quick note');
 });
-test('scheduled sender processes at most 15 messages sequentially per tick',async()=>{
+test('scheduled sender processes at most 150 messages with ten concurrent requests per tick',async()=>{
  const originalFetch=globalThis.fetch;
  let calls=0,active=0,maximumActive=0;
  globalThis.fetch=async()=>{
@@ -177,8 +177,8 @@ test('scheduled sender processes at most 15 messages sequentially per tick',asyn
    DASHBOARD_API_URL:'https://dashboard.example',
    BACKGROUND_CRON_SECRET:'test-only-secret'
   });
-  assert.equal(calls,15);
-  assert.equal(maximumActive,1);
+  assert.equal(calls,150);
+  assert.equal(maximumActive,10);
  }finally{
   globalThis.fetch=originalFetch;
  }
@@ -312,4 +312,13 @@ test('encrypts account credentials and binds them to the account email',async()=
 test('CSV quoted fields, deduplication and invalid addresses',()=>{
  const r=parseLeads('email,name,store\na@example.com,A,"Store, One"\na@example.com,B,X\nbad,C,X\nb@example.com,B,Y');
  assert.equal(r.leads[0].store,'Store, One'); assert.equal(r.leads.length,2); assert.equal(r.duplicates,1); assert.equal(r.invalid,1);
+});
+
+test('scheduler bounds contention retries and never retries an unconfirmed request',async()=>{
+ const originalFetch=globalThis.fetch;let calls=0;
+ try{
+ globalThis.fetch=async()=>{calls++;return new Response(JSON.stringify({busy:true}),{headers:{'Content-Type':'application/json'}});};
+ await scheduledSender.scheduled({},{DASHBOARD_API_URL:'https://dashboard.example',BACKGROUND_CRON_SECRET:'local-only'});assert.equal(calls,300);
+ calls=0;globalThis.fetch=async()=>{calls++;throw new Error('No confirmation');};await scheduledSender.scheduled({},{DASHBOARD_API_URL:'https://dashboard.example',BACKGROUND_CRON_SECRET:'local-only'});assert.ok(calls<=10);
+ }finally{globalThis.fetch=originalFetch;}
 });

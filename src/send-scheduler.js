@@ -1,4 +1,4 @@
-const sendsPerInvocation = 15;
+import { SEND_CONCURRENCY as concurrency, SENDS_PER_INVOCATION as sendsPerInvocation, MAX_SEND_ATTEMPTS as maximumAttempts } from './send-limits.mjs';
 
 export default {
   async scheduled(_controller, env) {
@@ -7,35 +7,34 @@ export default {
       return;
     }
     const baseUrl = env.DASHBOARD_API_URL.replace(/\/+$/, '');
-    for (let index = 0; index < sendsPerInvocation; index++) {
-      let response;
-      try {
-        response = await fetch(`${baseUrl}/api/internal/send-tick`, {
-          method: 'POST',
-          headers: {
-            Authorization: `Bearer ${env.BACKGROUND_CRON_SECRET}`,
-            Origin: baseUrl,
-            'Content-Type': 'application/json'
-          },
-          body: '{}'
-        });
-      } catch (error) {
-        console.error('Background send tick failed to reach the dashboard:', error);
-        return;
+    let remaining = sendsPerInvocation, attempts = 0, stopped = false;
+    const worker = async (senderSlot) => {
+      while (!stopped && remaining > 0 && attempts < maximumAttempts) {
+        remaining--; attempts++;
+        try {
+          const response = await fetch(`${baseUrl}/api/internal/send-tick`, {
+            method: 'POST',
+            headers: { Authorization: `Bearer ${env.BACKGROUND_CRON_SECRET}`, Origin: baseUrl, 'Content-Type': 'application/json' },
+            body: JSON.stringify({senderSlot})
+          });
+          const result = await response.json();
+          if (!response.ok) {
+            console.error('Background send tick was rejected:', response.status, result.error || '');
+            stopped = true; return;
+          }
+          if (result.busy) {
+            remaining++;
+            await new Promise(resolve => setTimeout(resolve, 100));
+            continue;
+          }
+          if (result.sent !== true && result.failed !== true) { stopped = true; return; }
+        } catch {
+          // Never retry a request with unknown delivery confirmation.
+          console.error('Background send tick did not return confirmation; stopping this invocation.');
+          stopped = true; return;
+        }
       }
-
-      let result;
-      try {
-        result = await response.json();
-      } catch {
-        console.error('Background send tick returned a non-JSON response:', response.status);
-        return;
-      }
-      if (!response.ok) {
-        console.error('Background send tick was rejected:', response.status, result.error || '');
-        return;
-      }
-      if (!result.sent && !result.failed) return;
-    }
+    };
+    await Promise.all(Array.from({length:concurrency},(_,senderSlot)=>worker(senderSlot)));
   }
 };

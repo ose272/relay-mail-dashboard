@@ -1,6 +1,7 @@
 import { readSessionCookie, verifySession } from './_lib/auth.js';
 
 const publicPaths = new Set(['/login', '/login.html', '/login.js', '/styles.css', '/favicon.ico']);
+const publicAssetPattern = /\.(?:css|js|mjs|map|ico|svg|png|jpe?g|webp|avif|woff2?|ttf)$/i;
 
 function jsonResponse(status, error) {
   return new Response(JSON.stringify({ error }), {
@@ -11,7 +12,11 @@ function jsonResponse(status, error) {
 
 export async function onRequest({ request, env, next }) {
   const url = new URL(request.url);
-  if (publicPaths.has(url.pathname) || url.pathname === '/api/login') return next();
+  if (
+    publicPaths.has(url.pathname) ||
+    (!url.pathname.startsWith('/api/') && publicAssetPattern.test(url.pathname)) ||
+    url.pathname === '/api/login'
+  ) return next();
   if (
     url.pathname === '/api/internal/send-tick' &&
     env.BACKGROUND_CRON_SECRET &&

@@ -1,3 +1,7 @@
+import { meteredD1, READ_BUDGET, WRITE_BUDGET } from '../_lib/usage-budget.js';
+import { selectReadyDelivery, claimReadyDeliverySql, seedSenderQueue } from '../../src/ready-senders.mjs';
+import { SEND_CONCURRENCY } from '../../src/send-limits.mjs';
+import { expireStaleDeliveriesSql } from '../../src/send-selection.mjs';
 import { allocateRepeatedCampaign, assignScoutingPlans, assessAccountHealth, parseLeads } from '../../src/domain.mjs';
 import { eligibleLeadsSql } from '../../src/sending-query.mjs';
 import { decryptCredential, encryptCredential } from '../_lib/credentials.js';
@@ -197,6 +201,14 @@ async function sendHealthNotification(db, env, eventId, retry = false) {
 const leadPageSize = 100;
 const inboxSummaryLimit = 250;
 
+function startOfLagosDayIso(now = new Date()) {
+  const parts = new Intl.DateTimeFormat('en-CA', {
+    timeZone: 'Africa/Lagos', year: 'numeric', month: '2-digit', day: '2-digit'
+  }).formatToParts(now);
+  const values = Object.fromEntries(parts.filter(part => part.type !== 'literal').map(part => [part.type, part.value]));
+  return new Date(`${values.year}-${values.month}-${values.day}T00:00:00+01:00`).toISOString();
+}
+
 function decodeLeadCursor(value) {
   try {
     const parsed = JSON.parse(value || '[]');
@@ -212,18 +224,20 @@ function encodeLeadCursor(lead) {
 
 async function loadThread(db, id) {
   const [thread, messages] = await Promise.all([
-    db.prepare('SELECT id, name, store, email, subject, account_id, unread, status FROM threads WHERE id = ?').bind(id).first(),
+    db.prepare('SELECT id, name, store, email, subject, account_id, unread, status, starred, archived, tag FROM threads WHERE id = ?').bind(id).first(),
     db.prepare('SELECT id, thread_id, direction, body, time, send_state FROM messages WHERE thread_id = ? ORDER BY time, id').bind(id).all()
   ]);
   if (!thread) return null;
   return {
     id: thread.id, name: thread.name, store: thread.store, email: thread.email,
+    starred: Boolean(thread.starred), archived: Boolean(thread.archived), tag: thread.tag,
     subject: thread.subject, accountId: thread.account_id, unread: Boolean(thread.unread), status: thread.status,
     messages: resultRows(messages).map(message => ({ direction: message.direction, body: message.body, time: message.time, sendState: message.send_state }))
   };
 }
 
 async function loadState(db, options = {}) {
+  const todayStart = startOfLagosDayIso();
   const leadScope = options.leadScope === 'archived' ? 'archived' : 'active';
   const cursor = decodeLeadCursor(options.leadCursor);
   const leadStatus = leadScope === 'archived' ? 'Archived' : 'Ready';
@@ -233,10 +247,12 @@ async function loadState(db, options = {}) {
     db.prepare('SELECT value FROM app_settings WHERE key = ?').bind('defaultCap').first(),
     db.prepare('SELECT value FROM app_settings WHERE key = ?').bind('healthNotificationEmail').first(),
     db.prepare(`
-      SELECT id, email, cap, used, paused, connection, imap_verified_at, smtp_verified_at,
+      SELECT id, email, cap,
+        (SELECT COUNT(*) FROM campaign_deliveries d WHERE d.account_id = accounts.id AND d.status = 'sent' AND d.sent_at >= ?) AS used,
+        paused, connection, imap_verified_at, smtp_verified_at,
         last_sync_at, credential_ciphertext, health_status, health_checked_at, health_code, health_message
       FROM accounts ORDER BY created_at, email
-    `).all(),
+    `).bind(new Date(Date.now() - 86400000).toISOString()).all(),
     db.prepare(`SELECT id, email, name, store, status, created_at FROM leads
       WHERE status = ? ${cursorSql} ORDER BY created_at, email, id LIMIT ?`).bind(...leadBindings).all(),
     db.prepare(`SELECT
@@ -248,7 +264,8 @@ async function loadState(db, options = {}) {
       planned_sends, sent_count, pending_count, uncertain_count, failed_count, failure_codes
       FROM campaigns ORDER BY created_at DESC`).all(),
     db.prepare(`SELECT thread_id, direction, body, time, send_state FROM messages
-      ORDER BY time DESC, id DESC LIMIT ?`).bind(inboxSummaryLimit).all(),
+      WHERE direction = 'in' AND time >= ?
+      ORDER BY time DESC, id DESC LIMIT ?`).bind(todayStart, inboxSummaryLimit).all(),
     db.prepare(`
       SELECT e.id, e.account_id, a.email AS account_email, e.status, e.code, e.message,
         e.created_at, e.resolved_at, e.read_at, e.email_status, e.email_sent_at,
@@ -270,14 +287,19 @@ async function loadState(db, options = {}) {
   const leads = leadRows.slice(0, leadPageSize);
   const recentMessages = resultRows(recentMessagesResult);
   const threadIds = [...new Set(recentMessages.map(message => message.thread_id))];
-  const threadsResult = threadIds.length
-    ? await db.prepare(`SELECT id, name, store, email, subject, account_id, unread, status FROM threads WHERE id IN (${threadIds.map(() => '?').join(', ')})`).bind(...threadIds).all()
-    : { results: [] };
+  // D1 accepts no more than 100 bound parameters per query. Batch lookups so
+  // every same-day reply is visible without risking a state-endpoint failure.
+  const threadGroups = await Promise.all(Array.from({ length: Math.ceil(threadIds.length / 100) }, (_, index) => {
+    const ids = threadIds.slice(index * 100, (index + 1) * 100);
+    return db.prepare(`SELECT id, name, store, email, subject, account_id, unread, status, starred, archived, tag FROM threads WHERE id IN (${ids.map(() => '?').join(', ')})`).bind(...ids).all();
+  }));
+  const threads = threadGroups.flatMap(resultRows);
   const latestMessageByThread = new Map();
   for (const message of recentMessages) {
     if (!latestMessageByThread.has(message.thread_id)) latestMessageByThread.set(message.thread_id, message);
   }
   return {
+    workspaceName: (await db.prepare("SELECT value FROM app_settings WHERE key = 'workspaceName'").first())?.value || 'Relay Mail',
     cap: Number(settingsResult?.value || 40),
     accounts: resultRows(accountsResult).map(account => ({
       id: account.id,
@@ -356,13 +378,14 @@ async function loadState(db, options = {}) {
         failureCodes: String(campaign.failure_codes || '').split(',').filter(Boolean)
       };
     }),
-    threads: resultRows(threadsResult).map(thread => ({
+    threads: threads.map(thread => ({
       id: thread.id,
       name: thread.name,
       store: thread.store,
       email: thread.email,
       subject: thread.subject,
       accountId: thread.account_id,
+      starred: Boolean(thread.starred), archived: Boolean(thread.archived), tag: thread.tag,
       unread: Boolean(thread.unread),
       status: thread.status,
       messages: latestMessageByThread.has(thread.id) ? [latestMessageByThread.get(thread.id)].map(message => ({
@@ -396,7 +419,7 @@ async function loadSendingStatus(db) {
   }));
 }
 
-async function insertLeads(db, leads) {
+async function insertLeads(db, leads, onProgress) {
   let inserted = 0;
   for (let offset = 0; offset < leads.length; offset += 1000) {
     const statements = [];
@@ -408,11 +431,12 @@ async function insertLeads(db, leads) {
     }
     const results = await db.batch(statements);
     inserted += results.reduce((total, result) => total + (result.meta?.changes || 0), 0);
+    onProgress?.(Math.min(offset + 1000, leads.length));
   }
   return inserted;
 }
 
-async function insertLeadImportBatch(db, batch) {
+async function insertLeadImportBatch(db, batch, onProgress) {
   await db.prepare(`
     INSERT INTO lead_import_batches (
       id, file_name, created_at, imported_count, duplicate_count, invalid_count
@@ -426,11 +450,12 @@ async function insertLeadImportBatch(db, batch) {
     batch.invalidCount
   ).run();
 
-  let statements = [];
+  let statements = [], linked = 0;
   const flush = async () => {
     if (!statements.length) return;
     await db.batch(statements);
     statements = [];
+    onProgress?.(linked);
   };
   for (let offset = 0; offset < batch.emails.length; offset += 80) {
     const emails = batch.emails.slice(offset, offset + 80);
@@ -443,7 +468,8 @@ async function insertLeadImportBatch(db, batch) {
         INSERT OR IGNORE INTO lead_import_batch_items (batch_id, lead_id, created_at)
         VALUES ${chunk.map(() => '(?, ?, ?)').join(', ')}
       `).bind(...values));
-      if (statements.length === 100) await flush();
+      linked += chunk.length;
+      if (statements.length === 100 || (onProgress && statements.length >= 12)) await flush();
     }
   }
   await flush();
@@ -507,6 +533,7 @@ async function insertCampaignDeliveries(db, campaignId, assignments, createdAt) 
   await db.prepare(`
     UPDATE campaigns SET planned_sends = ?, pending_count = ? WHERE id = ?
   `).bind(plannedSends, plannedSends, campaignId).run();
+  await seedSenderQueue(db,campaignId);
 }
 
 function personalize(value, lead) {
@@ -523,42 +550,56 @@ async function handlePost(request, env, path) {
   if (path === '/api/internal/send-tick') {
     const activeRun = await db.prepare(`
       SELECT c.id FROM campaigns c
-      WHERE c.name = 'Direct send' AND c.status IN ('Sending', 'Scheduled', 'Paused')
+      WHERE c.name = 'Direct send' AND c.status IN ('Sending', 'Scheduled')
+        AND (c.next_send_at IS NULL OR c.next_send_at <= ?)
         AND EXISTS (
           SELECT 1 FROM campaign_deliveries d
           WHERE d.campaign_id = c.id AND d.status = 'queued'
         )
       ORDER BY c.created_at LIMIT 1
-    `).first();
+    `).bind(new Date().toISOString()).first();
     if (!activeRun) return jsonResponse(200, { ok: true, done: true });
     body.campaignId = activeRun.id;
     path = '/api/campaign/send';
   }
 
-  if (path === '/api/import') {
+  if (path === '/api/import' || path === '/api/import/progress') {
     if (typeof body.text !== 'string') throw new HttpError(400, 'Choose a CSV or TXT file.');
-    const existing = resultRows(await db.prepare('SELECT email FROM leads').all());
-    const parsed = parseLeads(body.text, existing);
-    const batchLeads = parseLeads(body.text, []);
-    const imported = await insertLeads(db, parsed.leads);
-    const createdAt = new Date().toISOString();
-    const batchId = crypto.randomUUID();
-    const fileName = String(body.fileName || 'Imported leads').replace(/[\\/]/g, '').trim().slice(0, 255) || 'Imported leads';
-    await insertLeadImportBatch(db, {
-      id: batchId,
-      fileName,
-      createdAt,
-      importedCount: imported,
-      duplicateCount: parsed.duplicates + parsed.leads.length - imported,
-      invalidCount: parsed.invalid,
-      emails: batchLeads.leads.map(lead => lead.email)
+    const runImport = async (emit = () => {}) => {
+      emit({ phase: 'validating', completed: 0, total: null });
+      const existing = resultRows(await db.prepare('SELECT email FROM leads').all());
+      const parsed = parseLeads(body.text, existing);
+      const batchLeads = parseLeads(body.text, []);
+      if(db.remainingBudget){
+        const left=db.remainingBudget();
+        if(left.writes < parsed.leads.length*4+batchLeads.leads.length*4+20)throw new HttpError(400,'This import exceeds the remaining application write budget. Split the file or wait for the next daily reset.');
+      }
+      const total = parsed.leads.length + batchLeads.leads.length;
+      emit({ phase: 'saving leads', completed: 0, total });
+      const imported = await insertLeads(db, parsed.leads, completed => emit({ phase: 'saving leads', completed, total }));
+      const createdAt = new Date().toISOString();
+      const batchId = crypto.randomUUID();
+      const fileName = String(body.fileName || 'Imported leads').replace(/[\\/]/g, '').trim().slice(0, 255) || 'Imported leads';
+      await insertLeadImportBatch(db, {
+        id: batchId, fileName, createdAt, importedCount: imported,
+        duplicateCount: parsed.duplicates + parsed.leads.length - imported,
+        invalidCount: parsed.invalid, emails: batchLeads.leads.map(lead => lead.email)
+      }, completed => emit({ phase: 'saving batch', completed: parsed.leads.length + completed, total }));
+      const result = { imported, duplicates: parsed.duplicates + parsed.leads.length - imported, invalid: parsed.invalid, batchId };
+      emit({ phase: 'complete', completed: total, total, result });
+      return result;
+    };
+    if (path === '/api/import') return jsonResponse(200, await runImport());
+    const stream = new ReadableStream({
+      start(controller) {
+        const emit = event => controller.enqueue(encoder.encode(JSON.stringify(event) + '\n'));
+        return runImport(emit).then(() => controller.close()).catch(error => {
+          emit({ phase: 'error', error: error instanceof HttpError ? error.message : 'Import interrupted. Refresh the batch list before retrying to check what was saved.' });
+          controller.close();
+        });
+      }
     });
-    return jsonResponse(200, {
-      imported,
-      duplicates: parsed.duplicates + parsed.leads.length - imported,
-      invalid: parsed.invalid,
-      batchId
-    });
+    return new Response(stream, { headers: { 'Content-Type': 'application/x-ndjson; charset=utf-8', 'Cache-Control': 'no-store, no-transform', 'X-Content-Type-Options': 'nosniff' } });
   }
 
   if (path === '/api/import/batch/delete') {
@@ -703,6 +744,29 @@ async function handlePost(request, env, path) {
     return jsonResponse(200, { ok: true, archived: false });
   }
 
+  if (path === '/api/template/status') {
+    if (typeof body.id !== 'string' || typeof body.paused !== 'boolean') throw new HttpError(400, 'Choose a plan and status.');
+    const result = await db.prepare('UPDATE templates SET archived_at = ? WHERE id = ?').bind(body.paused ? new Date().toISOString() : null, body.id).run();
+    if (!result.meta?.changes) throw new HttpError(404, 'Scouting plan not found.');
+    return jsonResponse(200, { ok: true });
+  }
+
+  if (path === '/api/thread/update') {
+    if (typeof body.id !== 'string') throw new HttpError(400, 'Choose a conversation.');
+    const values = [], assignments = [];
+    for (const key of ['unread', 'starred', 'archived']) {
+      if (typeof body[key] === 'boolean') { assignments.push(`${key} = ?`); values.push(Number(body[key])); }
+    }
+    if (body.tag !== undefined) {
+      if (!['Interested','Follow up','Question','Not now'].includes(body.tag)) throw new HttpError(400, 'Invalid tag.');
+      assignments.push('tag = ?'); values.push(body.tag);
+    }
+    if (!assignments.length) throw new HttpError(400, 'No changes provided.');
+    const result = await db.prepare(`UPDATE threads SET ${assignments.join(', ')} WHERE id = ?`).bind(...values, body.id).run();
+    if (!result.meta?.changes) throw new HttpError(404, 'Conversation not found.');
+    return jsonResponse(200, { ok: true });
+  }
+
   if (path === '/api/template/restore') {
     const id = typeof body.id === 'string' ? body.id : '';
     const result = await db.prepare('UPDATE templates SET archived_at = NULL WHERE id = ? AND archived_at IS NOT NULL')
@@ -827,7 +891,7 @@ async function handlePost(request, env, path) {
         WHERE account_id = ? AND resolved_at IS NULL
         ORDER BY created_at DESC LIMIT 1
       `).bind(account.id).first();
-      const notification = activeEvent ? await sendHealthNotification(db, env, activeEvent.id) : null;
+      const notification = activeEvent && !body.suppressNotification ? await sendHealthNotification(db, env, activeEvent.id) : null;
       return jsonResponse(200, {
         ok: true,
         skipped: true,
@@ -850,7 +914,7 @@ async function handlePost(request, env, path) {
     }
     if (password) result = assessAccountHealth(await checkGmailHealth(account.email, password));
     const eventId = await saveAccountHealth(db, account.id, result);
-    const notification = eventId && healthIssueStatuses.has(result.status)
+    const notification = eventId && !body.suppressNotification && healthIssueStatuses.has(result.status)
       ? await sendHealthNotification(db, env, eventId)
       : null;
     return jsonResponse(200, {
@@ -882,8 +946,12 @@ async function handlePost(request, env, path) {
 
   if (path === '/api/settings') {
     const cap = Number(body.cap);
+    const healthEmail = typeof body.healthNotificationEmail === 'string' ? body.healthNotificationEmail.trim().toLowerCase() : undefined;
+    if (healthEmail && !emailPattern.test(healthEmail)) throw new HttpError(400, 'Enter a valid health-alert email address.');
     if (!Number.isInteger(cap) || cap < 1 || cap > 40) throw new HttpError(400, 'Enter a cap from 1 to 40.');
     await db.batch([
+      ...(healthEmail !== undefined ? [db.prepare("INSERT INTO app_settings (key, value) VALUES ('healthNotificationEmail', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value").bind(healthEmail)] : []),
+      ...(typeof body.workspaceName === 'string' ? [db.prepare("INSERT INTO app_settings (key, value) VALUES ('workspaceName', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value").bind(body.workspaceName.trim().slice(0, 100) || 'Relay Mail')] : []),
       db.prepare('INSERT INTO app_settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value').bind('defaultCap', String(cap)),
       db.prepare('UPDATE accounts SET cap = ?').bind(cap)
     ]);
@@ -995,7 +1063,8 @@ async function handlePost(request, env, path) {
     }
     try {
       await insertCampaignDeliveries(db, id, planned.assignments, createdAt);
-      await db.prepare("UPDATE campaigns SET status = 'Sending' WHERE id = ?").bind(id).run();
+      await db.prepare("UPDATE campaigns SET status = 'Sending', next_send_at = ? WHERE id = ?")
+        .bind(createdAt, id).run();
       await db.prepare(`
         UPDATE campaigns SET status = 'Superseded'
         WHERE id != ? AND status IN ('Dry run', 'Paused', 'Scheduled')
@@ -1097,6 +1166,7 @@ async function handlePost(request, env, path) {
   }
 
   if (path === '/api/mail/sync') {
+    if(body.manual !== true) throw new HttpError(400, 'Automatic mailbox checks are disabled. Refresh the dashboard and click Sync connected inboxes.');
     if (typeof body.accountId !== 'string') throw new HttpError(400, 'Choose a connected account to sync.');
     const account = await db.prepare(`
       SELECT id, email, connection, credential_ciphertext, last_sync_uid, last_sync_uid_validity,
@@ -1318,7 +1388,7 @@ async function handlePost(request, env, path) {
   if (path === '/api/campaign/pause') {
     if (typeof body.campaignId !== 'string') throw new HttpError(400, 'Campaign not found.');
     const result = await db.prepare(`
-      UPDATE campaigns SET status = 'User paused'
+      UPDATE campaigns SET status = 'User paused', next_send_at = NULL
       WHERE id = ? AND status IN ('Dry run', 'Sending', 'Scheduled', 'Paused')
     `).bind(body.campaignId).run();
     if (!result.meta?.changes) throw new HttpError(409, 'This campaign cannot be paused.');
@@ -1340,9 +1410,9 @@ async function handlePost(request, env, path) {
     const queued = Number(counts?.queued || 0);
     if (!queued) throw new HttpError(409, 'There are no queued messages to resume.');
     const result = await db.prepare(`
-      UPDATE campaigns SET status = 'Sending'
+      UPDATE campaigns SET status = 'Sending', next_send_at = ?
       WHERE id = ? AND status IN ('Needs review', 'User paused', 'Paused', 'Scheduled', 'Sending')
-    `).bind(campaignId).run();
+    `).bind(new Date().toISOString(), campaignId).run();
     if (!result.meta?.changes) throw new HttpError(409, 'This send cannot be resumed from its current status.');
     return jsonResponse(200, { ok: true, queued, uncertain: Number(counts?.uncertain || 0) });
   }
@@ -1379,9 +1449,9 @@ async function handlePost(request, env, path) {
         WHERE id = ? AND status = 'uncertain'
       `).bind(deliveryId),
       db.prepare(`
-        UPDATE campaigns SET status = 'Sending'
+        UPDATE campaigns SET status = 'Sending', next_send_at = ?
         WHERE id = ? AND status = 'Needs review'
-      `).bind(delivery.campaign_id)
+      `).bind(new Date().toISOString(), delivery.campaign_id)
     ]);
     return jsonResponse(200, { ok: true, campaignId: delivery.campaign_id });
   }
@@ -1389,7 +1459,9 @@ async function handlePost(request, env, path) {
   if (path === '/api/campaign/send') {
     const campaignId = String(body.campaignId || '');
     const campaign = await db.prepare(`
-      SELECT id, status, created_at, template_id FROM campaigns WHERE id = ?
+      SELECT id, status, created_at, template_id, pending_count, sent_count,
+        uncertain_count, failed_count
+      FROM campaigns WHERE id = ?
     `).bind(campaignId).first();
     if (!campaign) throw new HttpError(404, 'Campaign not found.');
     if (campaign.status === 'Complete') throw new HttpError(409, 'This campaign has already finished.');
@@ -1404,10 +1476,8 @@ async function handlePost(request, env, path) {
     const nowIso = now.toISOString();
     const cutoff = new Date(now.getTime() - 24 * 60 * 60 * 1000).toISOString();
     const currentDay = Math.floor((now.getTime() - Date.parse(campaign.created_at)) / (24 * 60 * 60 * 1000)) + 1;
-    const stale = await db.prepare(`
-      UPDATE campaign_deliveries SET status = 'uncertain'
-      WHERE campaign_id = ? AND status = 'sending' AND started_at < ?
-    `).bind(campaignId, new Date(now.getTime() - 2 * 60 * 1000).toISOString()).run();
+    const stale = await db.prepare(expireStaleDeliveriesSql)
+      .bind(campaignId, new Date(now.getTime() - 2 * 60 * 1000).toISOString()).run();
     if (stale.meta?.changes) {
       await db.prepare("UPDATE campaigns SET status = 'Needs review' WHERE id = ?").bind(campaignId).run();
       return jsonResponse(200, {
@@ -1417,102 +1487,75 @@ async function handlePost(request, env, path) {
       });
     }
 
-    const activeDelivery = await db.prepare(`
-      SELECT id FROM campaign_deliveries
-      WHERE campaign_id = ? AND status = 'sending'
-      LIMIT 1
-    `).bind(campaignId).first();
-    if (activeDelivery) {
-      return jsonResponse(200, {
-        ok: true,
-        paused: true,
-        reason: 'A message is already being sent for this run. Wait for it to finish before continuing.'
-      });
-    }
-
-    const defaultCap = Number((await db.prepare('SELECT value FROM app_settings WHERE key = ?').bind('defaultCap').first())?.value || 40);
-    const delivery = await db.prepare(`
+    const candidate = await selectReadyDelivery(db,{campaignId,nowIso,candidateOffset:Number.isInteger(body.senderSlot) && body.senderSlot>=0 && body.senderSlot<SEND_CONCURRENCY ? body.senderSlot : 0});
+    const delivery = candidate.id ? await db.prepare(`
       SELECT d.id, d.batch_no, d.day_no, d.attempt_count, l.id AS lead_id, l.email AS recipient,
         l.name AS lead_name, l.store AS lead_store,
         a.id AS account_id, a.email AS sender, a.cap AS account_cap,
         a.credential_ciphertext, t.subject, t.body
       FROM campaign_deliveries d
-      JOIN leads l ON l.id = d.lead_id
-      JOIN accounts a ON a.id = d.account_id
+      JOIN leads l ON l.id = d.lead_id JOIN accounts a ON a.id = d.account_id
       JOIN campaigns c ON c.id = d.campaign_id
       JOIN templates t ON t.id = COALESCE(d.template_id, c.template_id)
-      WHERE d.campaign_id = ? AND d.status = 'queued' AND d.day_no <= ?
-        AND (d.retry_after IS NULL OR d.retry_after <= ?)
-        AND a.paused = 0 AND a.connection = 'Connected'
-        AND a.smtp_verified_at IS NOT NULL AND a.credential_ciphertext IS NOT NULL
-        AND (
-          SELECT COUNT(*) FROM campaign_deliveries usage
-          WHERE usage.account_id = a.id
-            AND usage.status IN ('sending', 'sent', 'uncertain')
-            AND COALESCE(usage.sent_at, usage.started_at) > ?
-        ) < MIN(40, a.cap, ?)
-      ORDER BY d.day_no,
-        (
-          SELECT MAX(COALESCE(recent.sent_at, recent.started_at))
-          FROM campaign_deliveries recent
-          WHERE recent.campaign_id = d.campaign_id
-            AND recent.account_id = d.account_id
-            AND recent.status IN ('sending', 'sent', 'uncertain')
-        ),
-        d.batch_no, d.rowid
-      LIMIT 1
-    `).bind(campaignId, currentDay, nowIso, cutoff, defaultCap).first();
+      WHERE d.id = ? AND d.status = 'queued'
+    `).bind(candidate.id).first() : null;
 
     if (!delivery) {
-      const progress = await db.prepare(`
-        SELECT
-          SUM(CASE WHEN status = 'queued' THEN 1 ELSE 0 END) AS queued,
-          SUM(CASE WHEN status = 'sending' THEN 1 ELSE 0 END) AS sending,
-          SUM(CASE WHEN status = 'sent' THEN 1 ELSE 0 END) AS sent,
-          SUM(CASE WHEN status = 'uncertain' THEN 1 ELSE 0 END) AS uncertain,
-          SUM(CASE WHEN status = 'failed' THEN 1 ELSE 0 END) AS failed,
-          MIN(CASE WHEN status = 'queued' THEN day_no END) AS next_day,
-          MIN(CASE WHEN status = 'queued' THEN retry_after END) AS next_retry_at
-        FROM campaign_deliveries WHERE campaign_id = ?
+      const active = await db.prepare("SELECT 1 FROM campaign_deliveries WHERE campaign_id=? AND status='sending' LIMIT 1").bind(campaignId).first();
+      if (active) return jsonResponse(200, {ok:true,busy:true});
+      // The campaign counters are maintained by a trigger. Only inspect the
+      // next queued delivery here; never aggregate every campaign delivery on
+      // each scheduler tick.
+      const nextQueued = candidate.nextQuotaAt ? {day_no:0,retry_after:candidate.nextQuotaAt} : await db.prepare(`
+        SELECT day_no, retry_after
+        FROM campaign_deliveries
+        WHERE campaign_id = ? AND status = 'queued'
+        ORDER BY day_no,
+          CASE WHEN retry_after IS NULL THEN 0 ELSE 1 END,
+          retry_after,
+          batch_no
+        LIMIT 1
       `).bind(campaignId).first();
-      const queued = Number(progress?.queued || 0);
-      const sending = Number(progress?.sending || 0);
-      const uncertain = Number(progress?.uncertain || 0);
+      const queued = Number(campaign.pending_count || 0);
+      const sending = 0;
+      const uncertain = Number(campaign.uncertain_count || 0);
       if (!queued && !sending) {
         const status = uncertain ? 'Needs review' : 'Complete';
-        await db.prepare('UPDATE campaigns SET status = ? WHERE id = ?').bind(status, campaignId).run();
+        await db.prepare("UPDATE campaigns SET status = ? WHERE id = ? AND status IN ('Sending','Scheduled','Dry run','Paused')").bind(status, campaignId).run();
         return jsonResponse(200, {
           ok: true,
           done: !uncertain,
           needsReview: Boolean(uncertain),
-          sent: Number(progress?.sent || 0),
-          failed: Number(progress?.failed || 0),
+          sent: Number(campaign.sent_count || 0),
+          failed: Number(campaign.failed_count || 0),
           pending: 0,
           status
         });
       }
 
-      const nextDay = Number(progress?.next_day || 0);
+      const nextDay = Number(nextQueued?.day_no || 0);
       const scheduledAt = nextDay > currentDay
         ? new Date(Date.parse(campaign.created_at) + (nextDay - 1) * 24 * 60 * 60 * 1000).toISOString()
         : null;
-      const retryAt = progress?.next_retry_at && Date.parse(progress.next_retry_at) > now.getTime()
-        ? progress.next_retry_at
+      const retryAt = nextQueued?.retry_after && Date.parse(nextQueued.retry_after) > now.getTime()
+        ? nextQueued.retry_after
         : null;
-      const nextSendAt = scheduledAt || retryAt;
+      const nextSendAt = scheduledAt || retryAt || candidate.nextQuotaAt;
       const status = nextSendAt ? 'Scheduled' : 'Paused';
-      await db.prepare('UPDATE campaigns SET status = ? WHERE id = ?').bind(status, campaignId).run();
+      await db.prepare("UPDATE campaigns SET status = ?, next_send_at = ? WHERE id = ? AND status IN ('Sending','Scheduled','Dry run','Paused')")
+        .bind(status, nextSendAt, campaignId).run();
       return jsonResponse(200, {
         ok: true,
         paused: true,
         status,
         pending: queued + sending,
-        sent: Number(progress?.sent || 0),
+        sent: Number(campaign.sent_count || 0),
         nextSendAt,
         reason: scheduledAt
           ? 'The next 24-hour sending window has not started yet.'
           : retryAt
             ? 'A temporary sender limit was reached. The background sender will retry after the displayed time.'
+          : candidate.nextQuotaAt ? 'Sender quotas are full. Sending will resume automatically when rolling capacity returns.'
           : 'No assigned sender has capacity right now. Resume after a sender’s rolling 24-hour limit resets.'
       });
     }
@@ -1524,20 +1567,10 @@ async function handlePost(request, env, path) {
       throw new HttpError(409, 'Sender credentials could not be decrypted. Reconnect this account before sending.');
     }
 
-    const claim = await db.prepare(`
-      UPDATE campaign_deliveries
-      SET status = 'sending', started_at = ?, attempt_count = attempt_count + 1,
-        retry_after = NULL, last_error = NULL
-      WHERE id = ? AND status = 'queued'
-        AND (
-          SELECT COUNT(*) FROM campaign_deliveries usage
-          WHERE usage.account_id = ?
-            AND usage.status IN ('sending', 'sent', 'uncertain')
-            AND COALESCE(usage.sent_at, usage.started_at) > ?
-        ) < MIN(40, ?, ?)
-    `).bind(nowIso, delivery.id, delivery.account_id, cutoff, delivery.account_cap, defaultCap).run();
+    const claim = await db.prepare(claimReadyDeliverySql)
+      .bind(nowIso, delivery.id, nowIso).run();
     if (!claim.meta?.changes) {
-      return jsonResponse(200, { ok: true, paused: true, reason: 'Sender capacity changed; check the campaign again.' });
+      return jsonResponse(200, { ok: true, busy: true, reason: 'Delivery claim changed; select another available sender.' });
     }
 
     const text = personalize(delivery.body, {
@@ -1580,10 +1613,11 @@ async function handlePost(request, env, path) {
             WHERE id = ? AND status = 'sending'
           `).bind(retryAt, diagnostic, delivery.id),
           db.prepare(`
-            UPDATE campaigns SET status = CASE
-              WHEN status = 'User paused' THEN status ELSE 'Scheduled' END
+            UPDATE campaigns SET
+              status = CASE WHEN status IN ('User paused','Needs review') THEN status ELSE 'Scheduled' END,
+              next_send_at = CASE WHEN status IN ('User paused','Needs review') THEN next_send_at ELSE ? END
             WHERE id = ?
-          `).bind(campaignId)
+          `).bind(retryAt, campaignId)
         ]);
         return jsonResponse(200, {
           ok: true,
@@ -1600,9 +1634,9 @@ async function handlePost(request, env, path) {
             WHERE id = ? AND status = 'sending'
           `).bind(diagnostic, delivery.id),
           db.prepare(`
-            UPDATE campaigns SET status = 'Sending'
-            WHERE id = ? AND status <> 'User paused'
-          `).bind(campaignId)
+            UPDATE campaigns SET status = 'Sending', next_send_at = ?
+            WHERE id = ? AND status IN ('Sending','Scheduled','Dry run','Paused')
+          `).bind(nowIso, campaignId)
         ]);
         return jsonResponse(200, {
           ok: true,
@@ -1632,7 +1666,8 @@ async function handlePost(request, env, path) {
       `).bind(crypto.randomUUID(), delivery.id, text, sentAt, messageId, `campaign:${delivery.id}`),
       db.prepare("UPDATE campaign_deliveries SET status = 'sent', sent_at = ? WHERE id = ? AND status = 'sending'")
         .bind(sentAt, delivery.id),
-      db.prepare("UPDATE campaigns SET status = 'Sending' WHERE id = ? AND status <> 'User paused'").bind(campaignId)
+      db.prepare("UPDATE campaigns SET status = 'Sending', next_send_at = ? WHERE id = ? AND status IN ('Sending','Scheduled','Dry run','Paused')")
+        .bind(sentAt, campaignId)
     ]);
     return jsonResponse(200, { ok: true, sent: true, sender: delivery.sender });
   }
@@ -1764,7 +1799,7 @@ async function handlePost(request, env, path) {
   throw new HttpError(404, 'Not found.');
 }
 
-export async function onRequest({ request, env }) {
+async function handleRequest({ request, env }) {
   const url = new URL(request.url);
   const path = url.pathname;
   try {
@@ -1781,7 +1816,22 @@ export async function onRequest({ request, env }) {
       return jsonResponse(200, { thread });
     }
     if (request.method === 'GET' && path === '/api/sending/status') {
-      return jsonResponse(200, { runs: await loadSendingStatus(env.DB) });
+      const runs = await loadSendingStatus(env.DB);
+      let deliveries = [];
+      if (runs[0] && url.searchParams.get('summary') !== '1') {
+        // Bounded activity queries use the campaign/status index. Include review
+        // records independently so they cannot disappear behind recent successes.
+        const db = env.DB;
+        const groups = await Promise.all(['uncertain', 'failed', 'sent', 'queued'].map(status => db.prepare(`
+          SELECT d.id, d.status, d.started_at, d.sent_at, d.created_at, d.last_error,
+            l.email AS recipient, l.name, a.email AS sender, t.subject, t.name AS plan_name
+          FROM campaign_deliveries d JOIN leads l ON l.id = d.lead_id
+          JOIN accounts a ON a.id = d.account_id LEFT JOIN templates t ON t.id = d.template_id
+          WHERE d.campaign_id = ? AND d.status = ? ORDER BY d.created_at DESC, d.id DESC LIMIT 50
+        `).bind(runs[0].id, status).all()));
+        deliveries = groups.flatMap(resultRows);
+      }
+      return jsonResponse(200, { runs, deliveries });
     }
     if (request.method !== 'POST') return jsonResponse(405, { error: 'Method not allowed.' });
     return await handlePost(request, env, path);
@@ -1799,4 +1849,38 @@ export async function onRequest({ request, env }) {
     }
     return jsonResponse(500, { error: 'The request could not be completed.' });
   }
+}
+
+
+export async function onRequest(context) {
+ const {request,env}=context,url=new URL(request.url);
+ // Old browser timers must not cause even a usage-table lookup.
+ if(request.method==='POST' && url.pathname==='/api/mail/sync'){
+   const body=await request.clone().json().catch(()=>({}));
+   if(body.manual!==true)return jsonResponse(400,{error:'Automatic mailbox checks are disabled. Refresh the dashboard and click Sync connected inboxes.'});
+ }
+ const day=new Date().toISOString().slice(0,10);
+ const resetAt=new Date(Date.parse(day+'T00:00:00Z')+86400000).toISOString();
+ let initial;
+ try{initial=await env.DB.prepare('SELECT rows_read,rows_written FROM app_usage_days WHERE day=?').bind(day).first() || {rows_read:0,rows_written:0};}
+ catch(error){
+   if(/daily row read limit/i.test(String(error?.message||'')))return jsonResponse(503,{error:'Cloudflare D1 daily read quota is exhausted. It resets at 1:00 AM Africa/Lagos.',code:'D1_READ_LIMIT',resetAt});
+   return jsonResponse(503,{error:'Database usage accounting is unavailable. Sending is held.',code:'APP_USAGE_UNAVAILABLE'});
+ }
+ if(initial.rows_read>=READ_BUDGET || initial.rows_written>=WRITE_BUDGET){
+   if(url.pathname==='/api/internal/send-tick'){
+     await env.DB.prepare(`UPDATE campaigns SET status='Scheduled',next_send_at=? WHERE name='Direct send'
+       AND status IN ('Sending','Scheduled','Paused') AND (next_send_at IS NULL OR next_send_at<?)`)
+       .bind(resetAt,resetAt).run().catch(()=>{});
+   }
+   return jsonResponse(503,{error:'The application usage safety budget is reached. Sending is held until the next daily reset.',code:'APP_USAGE_BUDGET',resetAt});
+ }
+ const meter=meteredD1(env.DB,initial);
+ const response=await handleRequest({...context,env:{...env,DB:meter.db}});
+ const finish=()=>meter.flush(day).catch(()=>{});
+ if(response.headers.get('Content-Type')?.includes('application/x-ndjson') && response.body){
+   const reader=response.body.getReader();
+   return new Response(new ReadableStream({async start(controller){try{for(;;){const r=await reader.read();if(r.done)break;controller.enqueue(r.value);}await finish();controller.close();}catch(error){await finish();controller.error(error);}finally{reader.releaseLock();}}}),{status:response.status,headers:response.headers});
+ }
+ await finish();return response;
 }

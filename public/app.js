@@ -1,6 +1,8 @@
-import { renderSendingView } from './sending-view.js';
+import { renderSendingView, renderMailDashSendingShell } from './sending-view.js';
+import { renderExactMailDash } from './maildash-design.js';
+import { renderMailDashShell } from './maildash-shell.js';
 
-let state, view='Inbox',selected=null,filter='All',query='',leadsPage=0,leadCursor='',leadCursors=[],showArchivedLeads=false,pilotMessages=[],pilotStatus='',pilotSyncing=false,replyRequestIds=new Map(),directSendRunning=false,automaticInboxSyncTimer=null,backgroundStatusTimer=null,lastInboxSyncStartedAt=0,lastAutomaticHealthCheckStartedAt=0,healthCheckRunning=false,healthCheckStatus='',backgroundStatusRefreshing=false,backgroundStatusError='',lastRenderedDay='';
+let state, view=new URLSearchParams(window.location.search).get('view')==='Sending'?'Sending':'Inbox',selected=null,filter='All',query='',leadsPage=0,leadCursor='',leadCursors=[],showArchivedLeads=false,pilotMessages=[],pilotStatus='',pilotSyncing=false,replyRequestIds=new Map(),directSendRunning=false,automaticInboxSyncTimer=null,backgroundStatusTimer=null,lastInboxSyncStartedAt=0,lastAutomaticHealthCheckStartedAt=0,healthCheckRunning=false,healthCheckStatus='',backgroundStatusRefreshing=false,backgroundStatusError='',lastRenderedDay='',mailDashLight=false;
 const healthCheckIntervalMs=6*60*60*1000;
 const app=document.querySelector('#app'),modal=document.querySelector('#modal');
 const esc=v=>String(v??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
@@ -9,7 +11,7 @@ const accountAvailable=a=>!a.paused&&(a.connection===undefined||a.connection==='
 function localDateKey(date){if(!Number.isFinite(date.getTime()))return '';return `${date.getFullYear()}-${String(date.getMonth()+1).padStart(2,'0')}-${String(date.getDate()).padStart(2,'0')}`;}
 function latestThreadTime(thread){return thread.messages.reduce((latest,message)=>{const time=Date.parse(message.time);return Number.isFinite(time)?Math.max(latest,time):latest;},0);}
 function threadMessagesToday(thread){const today=localDateKey(new Date());return thread.messages.filter(message=>localDateKey(new Date(message.time))===today);}
-function inboxThreads(){const today=localDateKey(new Date());return state.threads.filter(thread=>state.mode!=='cloudflare'||localDateKey(new Date(latestThreadTime(thread)))===today).sort((a,b)=>latestThreadTime(b)-latestThreadTime(a));}
+function inboxThreads(){return state.threads.sort((a,b)=>latestThreadTime(b)-latestThreadTime(a));}
 function formatThreadTime(thread){const time=latestThreadTime(thread);return time?new Date(time).toLocaleTimeString([],{hour:'numeric',minute:'2-digit'}):'';}
 async function api(path,body){
  const r=await fetch('/api/'+path,body===undefined?{}:{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
@@ -41,6 +43,17 @@ function navIcon(name){
 function render(){
  lastRenderedDay=localDateKey(new Date());
  const visibleThreads=inboxThreads(),unread=visibleThreads.filter(t=>t.unread).length,cloud=state.mode==='cloudflare',sending=view==='Sending';
+ if(sending){
+  app.innerHTML=renderExactMailDash({state,directSendLabel});
+  app.querySelector('.mdx-shell')?.classList.toggle('is-light',mailDashLight);
+  bind();
+  return;
+ }
+ const mailDashContent=`${head()}${view==='Inbox'?inbox():view==='Leads'?leads():view==='Scouting plans'?templates():view==='Accounts'?accounts():settings()}`;
+ app.innerHTML=renderMailDashShell({state,view,content:mailDashContent});
+ app.querySelector('.mdx-shell')?.classList.toggle('is-light',mailDashLight);
+ bind();
+ return;
  const navItems=[['Inbox','▣'],['Sending','↗'],['Leads','♧'],['Scouting plans','▤'],['Accounts','▦'],['Settings','⚙']];
  const brand=sending
   ?'<svg viewBox="0 0 32 32" aria-hidden="true"><path d="M4 23V9l12 9 12-9v14" fill="none" stroke="currentColor" stroke-width="3.5" stroke-linecap="round" stroke-linejoin="round"/></svg>'
@@ -108,7 +121,7 @@ async function syncCloudInboxes(automatic=false){
  let completed=0,imported=0,more=false;const failures=[],mailboxIssues=[];
  try{
   for(let start=0;start<accounts.length;start+=3){
-   const results=await Promise.all(accounts.slice(start,start+3).map(async account=>{try{return {account,result:await api('mail/sync',{accountId:account.id})};}catch(error){return {account,error};}}));
+   const results=await Promise.all(accounts.slice(start,start+3).map(async account=>{try{return {account,result:await api('mail/sync',{accountId:account.id,manual:true})};}catch(error){return {account,error};}}));
    let batchImported=0;
    for(const item of results){completed++;if(item.error)failures.push({account:item.account,error:item.error});else{batchImported+=item.result.imported||0;more=more||item.result.more;if(item.result.inboxError)mailboxIssues.push(`${item.account.email}: ${item.result.inboxError}`);if(item.result.sentError)mailboxIssues.push(`${item.account.email}: ${item.result.sentError}`);}}
    imported+=batchImported;
@@ -255,6 +268,7 @@ function confirmUncertainReply(threadId,requestId,text){
  modal.querySelector('[data-retry-reply]').onclick=async event=>{const button=event.currentTarget;button.disabled=true;try{const result=await api('reply',{id:threadId,text,requestId,retryUncertain:true});sessionStorage.removeItem('draft-'+threadId);sessionStorage.removeItem('reply-request-'+threadId);sessionStorage.removeItem('reply-payload-'+threadId);modal.close();await refresh();toast(`Reply sent from ${result.account}.`);}catch(error){modal.querySelector('#reply-retry-error').textContent=error.message;button.disabled=false;}};
 }
 function bind(){
+ document.querySelector('[data-theme-toggle]')?.addEventListener('click',()=>{mailDashLight=!mailDashLight;render();});
  document.querySelector('[data-back]')?.addEventListener('click',()=>{selected=null;render();});
  document.querySelectorAll('[data-view]').forEach(b=>b.onclick=()=>{view=b.dataset.view;query='';render();});
  document.querySelectorAll('[data-action]').forEach(b=>{if(b.dataset.action!=='save-settings')b.onclick=()=>action(b.dataset.action);});
@@ -348,4 +362,4 @@ function startBackgroundStatusRefresh(){
   void refreshSendingStatus();
  },10_000);
 }
-refresh().then(()=>{startAutomaticInboxSync();startBackgroundStatusRefresh();}).catch(e=>{app.innerHTML='<div class="empty"><h1>Relay could not load.</h1><p>Please restart the local server and refresh.</p></div>';toast(e.message);});
+refresh().then(()=>{startBackgroundStatusRefresh();}).catch(e=>{app.innerHTML='<div class="empty"><h1>Relay could not load.</h1><p>Please restart the local server and refresh.</p></div>';toast(e.message);});

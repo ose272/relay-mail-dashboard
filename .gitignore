@@ -3,6 +3,15 @@ app password.txt
 CODEX_HANDOFF_PROMPT.md
 FIGMA_EXPORT.md
 design/figma-source/
+design/mail-dash-export/
+design/mail-dash-builder/*
+!design/mail-dash-builder/src/
+!design/mail-dash-builder/package.json
+!design/mail-dash-builder/package-lock.json
+!design/mail-dash-builder/tsconfig.json
+!design/mail-dash-builder/vite.config.ts
+!design/mail-dash-builder/index.html
+design/mail-dash-builder/src/data/initialData.ts
 .env
 .env.*
 data/
@@ -15,3 +24,15 @@ _worker.bundle
 wrangler.production.jsonc
 wrangler.scheduler.production.jsonc
 *.log
+
+.qa/
+.pages-release/
+
+# Superseded design-only preview files and generated avatars are not production source.
+public/maildash-design.css
+public/maildash-design.js
+public/maildash-shell.js
+public/src/
+design/mail-dash-builder/src/assets/
+.quota-fix-stage/
+.quota-fix-stage-2/

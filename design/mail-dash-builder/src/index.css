@@ -1,0 +1,76 @@
+@import "tailwindcss";
+@custom-variant dark (&:where(.dark, .dark *));
+
+:root {
+  --color-canvas: #F7F9FD;
+  --color-surface: #FFFFFF;
+  --color-border: #E5EAF3;
+  --color-tint: #EDF3FF;
+  --color-brand: #0039BC;
+  --color-subtle: #F3F6FC;
+  --color-muted: #66738C;
+  --color-text: #18233B;
+  --color-onBrand: #FFFFFF;
+  --color-success: #217458;
+  --color-successTint: #EDF7F2;
+  --color-warning: #94631D;
+  --color-warningTint: #FFF5DF;
+  --color-danger: #B54750;
+  --color-dangerTint: #FCEFF0;
+}
+
+.dark {
+  --color-canvas: #000000;
+  --color-surface: #111111;
+  --color-border: #2C2C2C;
+  --color-tint: #13234B;
+  --color-brand: #3D6FE3;
+  --color-subtle: #1B1B1B;
+  --color-muted: #A3ADC0;
+  --color-text: #FFFFFF;
+  --color-onBrand: #FFFFFF;
+  --color-success: #78C8A9;
+  --color-successTint: #142C23;
+  --color-warning: #E2BE7B;
+  --color-warningTint: #342A16;
+  --color-danger: #F3A5AA;
+  --color-dangerTint: #351D22;
+}
+
+@layer base {
+  html,
+  body {
+    font-family: 'Host Grotesk', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+    background-color: var(--color-canvas);
+    color: var(--color-text);
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+  }
+
+  .font-mono {
+    font-family: 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
+  }
+
+  .tabular-nums {
+    font-variant-numeric: tabular-nums;
+  }
+}
+
+/* Smooth subtle scrollbars matching canvas */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--color-border);
+  border-radius: 9999px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: var(--color-muted);
+}

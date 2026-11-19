@@ -5,18 +5,23 @@
   "type": "module",
   "scripts": {
     "start": "node server.mjs",
-    "test": "node --test src/domain.test.mjs",
+    "test": "node --test src/domain.test.mjs src/api.test.mjs src/send-selection.test.mjs src/ready-senders.test.mjs",
     "pages:build": "wrangler pages functions build functions --outdir .worker-build --compatibility-date 2026-11-16 --compatibility-flag nodejs_compat",
     "pages:dev": "wrangler pages dev ./public",
-    "pages:deploy": "wrangler pages deploy ./public --project-name=relay-mail-dashboard",
+    "pages:deploy": "node scripts/deploy-maildash.mjs",
     "d1:migrate:local": "wrangler d1 migrations apply relay-mail-dashboard --local",
-    "d1:migrate:remote": "wrangler d1 migrations apply relay-mail-dashboard --remote"
+    "d1:migrate:remote": "wrangler d1 migrations apply relay-mail-dashboard --remote",
+    "frontend:build": "node scripts/build-frontend.mjs"
   },
-  "engines": { "node": ">=22" },
+  "engines": {
+    "node": ">=22"
+  },
   "dependencies": {
     "imapflow": "^2.12.1",
     "mailparser": "^3.14.5",
     "nodemailer": "^10.6.0"
   },
-  "devDependencies": { "wrangler": "^4.163.0" }
+  "devDependencies": {
+    "wrangler": "^4.163.0"
+  }
 }
