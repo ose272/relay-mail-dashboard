@@ -272,6 +272,7 @@ test('send-start eligibility uses indexed blocker sets and preserves suppression
   assert.match(legacyPlan,/CORRELATED SCALAR SUBQUERY/);
   assert.match(legacyPlan,/SCAN d/);
   db.exec(readFileSync(new URL('../migrations/0017_sending_eligibility_indexes.sql',import.meta.url),'utf8'));
+  db.exec('PRAGMA automatic_index=OFF');
   const optimizedPlan=db.prepare(`EXPLAIN QUERY PLAN ${eligibleLeadsSql}`).all().map(row=>row.detail).join('\n');
   assert.doesNotMatch(optimizedPlan,/CORRELATED SCALAR SUBQUERY/);
   assert.match(optimizedPlan,/idx_campaign_deliveries_status_lead/);

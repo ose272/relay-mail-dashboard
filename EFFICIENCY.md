@@ -154,3 +154,13 @@ This is the explicitly retained policy, not a six-per-account one-send policy.
 Notifications have indexed history pagination, unread/read indicators, individual
 deletion and bulk deletion of read notifications. Deletion hides feed entries
 without changing account health or removing the underlying event audit.
+
+## Paid usage hold correction — 21 November 2026
+
+Production APP_USAGE_TIER was confirmed paid. The hold was the application write guard, not Cloudflare Free quota: app accounting recorded 238,313,393 reads and 1,000,852 writes today against 500m/1m daily guards. Raise paid daily writes to 1.5m (46.5m over 31 days, below the 50m paid monthly inclusion); retain the 500m daily read guard and Free limits. Paid read-only state/status/thread/notification APIs remain available during a sending hold; sending/sync/initiation remain blocked at the guard. No usage counters, credentials, campaign history, quota or scheduled times are reset.
+
+Cloudflare account analytics for November 1–21 returned 673,693,036 rows read and 1,738,468 rows written: 2.6948% of 25b reads and 3.4769% of 50m writes. This is calendar-month-to-date D1 usage, not a percentage for all Cloudflare products or proof of billing-cycle consumption. Workers requests/CPU and subscription renewal timing must be assessed separately. D1 storage measured 45,842,432 bytes, approximately 0.917% of the 5 GB included storage. Official pricing: https://developers.cloudflare.com/d1/platform/pricing/ .
+
+Production query insights showed eligibility LEFT JOIN blocker sets averaging 33,256,535 scanned rows, three runs totaling 99,769,605. Replace them with NOT IN membership lists, filtering NULL keys and preserving sent/sending/uncertain delivery and outbound reply suppression. Read-only production count probe of the replacement used 36,555 reads, zero writes (99.89% fewer than the historical average). No campaign or SMTP operation was used for the measurement. A regression disables SQLite automatic indexes to represent the problematic join-planning conditions.
+
+For capacity planning, measure sending, mailbox sync, preparation, dashboard and tracking separately. Today's writes include preparation/index/trigger costs, so dividing aggregate writes by sent messages does not establish steady-state send cost. Mail provider limits and shared-database throughput remain independent constraints. A 1,000-user deployment is not established by these usage percentages alone.

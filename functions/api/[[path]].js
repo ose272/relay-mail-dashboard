@@ -5,7 +5,7 @@ import {rebalanceCampaign} from '../../src/rebalance.mjs';
 import {mergeConversation} from '../../src/conversations.mjs';
 import {sendFailureHealth} from '../../src/send-health.mjs';
 import {recordBounceReports} from '../../src/bounces.mjs';
-import { meteredD1, usageBudgets } from '../_lib/usage-budget.js';
+import { meteredD1, usageBudgets, allowBudgetRead } from '../_lib/usage-budget.js';
 import { selectReadyDelivery, claimReadyDeliverySql, seedSenderQueue } from '../../src/ready-senders.mjs';
 import { SEND_CONCURRENCY } from '../../src/send-limits.mjs';
 import { expireStaleDeliveriesSql } from '../../src/send-selection.mjs';
@@ -1883,7 +1883,7 @@ export async function onRequest(context) {
    return jsonResponse(503,{error:'Database usage accounting is unavailable. Sending is held.',code:'APP_USAGE_UNAVAILABLE'});
  }
  const budgets=usageBudgets(env);
- if(initial.rows_read>=budgets.reads || initial.rows_written>=budgets.writes){
+ if((initial.rows_read>=budgets.reads || initial.rows_written>=budgets.writes) && !allowBudgetRead(env,request.method,url.pathname)){
    if(url.pathname==='/api/internal/send-tick'){
      await env.DB.prepare(`UPDATE campaigns SET status='Scheduled',next_send_at=? WHERE name='Direct send'
        AND status IN ('Sending','Scheduled','Paused') AND (next_send_at IS NULL OR next_send_at<?)`)

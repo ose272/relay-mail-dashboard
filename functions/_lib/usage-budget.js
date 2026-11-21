@@ -5,7 +5,7 @@ export const WRITE_BUDGET = 80_000;
 
 export function usageBudgets(env = {}) {
   return env.APP_USAGE_TIER === 'paid'
-    ? {reads: 500_000_000, writes: 1_000_000}
+    ? {reads: 500_000_000, writes: 1_500_000}
     : {reads: READ_BUDGET, writes: WRITE_BUDGET};
 }
 
@@ -52,3 +52,6 @@ export function meteredD1(raw, initial = {rows_read: 0, rows_written: 0}, budget
     }
   };
 }
+
+// Paid D1 has monthly inclusions; keep the dashboard readable during an application send hold.
+export function allowBudgetRead(env,method,path){return env.APP_USAGE_TIER==='paid' && method==='GET' && ['/api/state','/api/sending/status','/api/notifications','/api/thread'].includes(path);}
