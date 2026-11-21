@@ -1,6 +1,6 @@
 import { readSessionCookie, verifySession } from './_lib/auth.js';
 
-const publicPaths = new Set(['/login', '/login.html', '/login.js', '/styles.css', '/favicon.ico']);
+const publicPaths = new Set(['/login', '/login.html', '/login.js', '/styles.css', '/favicon.ico', '/track/open']);
 const publicAssetPattern = /\.(?:css|js|mjs|map|ico|svg|png|jpe?g|webp|avif|woff2?|ttf)$/i;
 
 function jsonResponse(status, error) {
@@ -18,7 +18,7 @@ export async function onRequest({ request, env, next }) {
     url.pathname === '/api/login'
   ) return next();
   if (
-    url.pathname === '/api/internal/send-tick' &&
+    ['/api/internal/send-tick','/api/internal/prepare-tick'].includes(url.pathname) &&
     env.BACKGROUND_CRON_SECRET &&
     request.headers.get('Authorization') === `Bearer ${env.BACKGROUND_CRON_SECRET}`
   ) return next();

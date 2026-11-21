@@ -199,16 +199,16 @@ export async function sendThreadReply({ email, password, to, subject, text, inRe
   }
 }
 
-export function createCampaignMessageOptions({ email, to, subject, text, messageId }) {
-  const options = { from: email, to, text, messageId };
+export function createCampaignMessageOptions({ email, to, subject, text, messageId, html }) {
+  const options = { from: email, to, text, messageId, html };
   if (subject?.trim()) options.subject = subject.trim();
   return options;
 }
 
-export async function sendCampaignMessage({ email, password, to, subject, text, messageId }) {
+export async function sendCampaignMessage({ email, password, to, subject, text, messageId, html }) {
   const transport = createSmtpTransport(email, password);
   try {
-    return await transport.sendMail(createCampaignMessageOptions({ email, to, subject, text, messageId }));
+    return await transport.sendMail(createCampaignMessageOptions({ email, to, subject, text, messageId, html }));
   } finally {
     transport.close();
   }

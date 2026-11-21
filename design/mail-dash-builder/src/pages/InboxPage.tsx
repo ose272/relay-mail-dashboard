@@ -471,3 +471,5 @@ export const InboxPage: React.FC<InboxPageProps> = ({
     </div>
   );
 };
+
+export default InboxPage;

@@ -26,7 +26,7 @@ export default function App() {
  const [threads,setThreads]=useState<InboxThread[]>([]), [selectedThreadId,setSelectedThreadId]=useState('');
  const [leads,setLeads]=useState<Lead[]>([]), [leadBatches,setLeadBatches]=useState<LeadBatch[]>([]);
  const [plans,setPlans]=useState<ScoutingPlan[]>([]), [accounts,setAccounts]=useState<ConnectedAccount[]>([]);
- const [settings,setSettings]=useState<WorkspaceSettings>({workspaceName:'Relay Mail',timezone:'Africa/Lagos',dailyWorkspaceCap:40,delayBetweenSendsSec:0,maxRetries:3,stopOnReply:true,openTracking:false,linkTracking:false,unsubscribeFooter:false,customTrackingDomain:'',signature:'',notifyOnReply:false,notifyOnBouncePause:false,dailyDigestTime:''});
+ const [settings,setSettings]=useState<WorkspaceSettings>({workspaceName:'Relay Mail',timezone:'Africa/Lagos',dailyWorkspaceCap:40,delayBetweenSendsSec:0,maxRetries:3,stopOnReply:true,openTracking:false,linkTracking:false,unsubscribeFooter:false,customTrackingDomain:'',signature:'',notifyOnReply:false,notifyOnBouncePause:false,dailyDigestTime:'',planOpenTracking:false,includeSpamFolders:false});
  const [leadTotal,setLeadTotal]=useState(0), [campaignCount,setCampaignCount]=useState(0),[leadPage,setLeadPage]=useState<any>({});
  const [importProgress,setImportProgress]=useState<ImportProgress|null>(null);
  const [usageBlocked,setUsageBlocked]=useState(false);
@@ -34,6 +34,8 @@ export default function App() {
  const [syncHadErrors,setSyncHadErrors]=useState(false);
  const failedSyncAccounts=useRef(new Set<string>()),lastSyncIncludeSent=useRef(false);
  const [conversationLoadingId,setConversationLoadingId]=useState('');
+ const [preparationRetry,setPreparationRetry]=useState(0);
+ const [preparationRequestError,setPreparationRequestError]=useState('');
  const [notifications,setNotifications]=useState<any[]>([]),[notificationCursor,setNotificationCursor]=useState<string|null>(null);
  const [accountAlerts,setAccountAlerts]=useState<any[]>([]);
  const lastActivityAt=useRef(0);
@@ -50,8 +52,8 @@ export default function App() {
   setLeads((data.leads || []).map(mapLead)); setLeadTotal(Number(data.leadCounts?.active || 0)); setLeadPage(data.leadPage || {});
   setLeadBatches((data.leadImportBatches || []).map((b:any)=>({id:b.id,name:b.fileName,sourceLabel:`${b.importedCount} imported · ${b.duplicateCount} duplicates · ${b.invalidCount} invalid`,leadCount:Number(b.leadCount),planName:'Automatic allocation',importedAt:b.createdAt})));
   setPlans((data.templates || []).map(mapPlan)); setCampaignCount((data.campaigns || []).length);
-  setSendingState(mapSending((data.campaigns || []).find((c:any)=>c.name==='Direct send')));
-  setSettings(prev=>({...prev,healthNotificationEmail:data.healthNotificationEmail || '',workspaceName:data.workspaceName || 'Relay Mail',dailyWorkspaceCap:Number(data.cap)}));
+  setSendingState(mapSending((data.campaigns || []).find((c:any)=>c.name==='Direct send' && c.status !== 'Cancelled')));
+  setSettings(prev=>({...prev,healthNotificationEmail:data.healthNotificationEmail || '',workspaceName:data.workspaceName || 'Relay Mail',dailyWorkspaceCap:Number(data.cap),openTracking:Boolean(data.openTracking),planOpenTracking:Boolean(data.planOpenTracking),includeSpamFolders:Boolean(data.includeSpamFolders)}));
   setActiveWorkspace(prev=>({...prev,name:data.workspaceName || 'Relay Mail'}));
   if(selectedThreadRef.current && data.threads?.some((t:any)=>t.id===selectedThreadRef.current)){
    const detail=await api('thread?id='+encodeURIComponent(selectedThreadRef.current));
@@ -63,7 +65,7 @@ export default function App() {
   const data=await api(activity?'sending/status':'sending/status?summary=1');
   if(activity)lastActivityAt.current=Date.now();
   if(data.accountAlerts)setAccountAlerts(data.accountAlerts);
-  setSendingState(prev=>{const next=mapSending(data.runs?.[0],data.deliveries || []);return activity?next:{...next,records:prev.id===next.id?prev.records:[]};});
+  setSendingState(prev=>{if(data.runs?.[0]?.status==='Cancelled')return emptySending;const next=mapSending(data.runs?.[0],data.deliveries || []);return activity?next:{...next,records:prev.id===next.id?prev.records:[]};});
  },[]);
  useEffect(()=>{refresh().catch(report);},[refresh,report]);
  useEffect(()=>{document.documentElement.classList.toggle('dark',theme==='dark');localStorage.setItem('relay-theme',theme);},[theme]);
@@ -81,6 +83,19 @@ export default function App() {
  },[loaded,unauthorized,usageBlocked,activePage,sendingState.status,sendingState.backendStatus,refreshSending,report]);
  useEffect(()=>{const timer=setInterval(()=>setThreads(prev=>prev.filter(t=>t.inboundDay===lagosDay(new Date().toISOString()))),60000);return()=>clearInterval(timer);},[]);
 
+ useEffect(()=>{
+  if(!loaded || usageBlocked || unauthorized || sendingState.backendStatus!=='Preparing' || !sendingState.id)return;
+  if(sendingState.preparation?.error && preparationRetry===0)return;
+  let stopped=false,timer:ReturnType<typeof setTimeout>;
+  const advance=async()=>{
+   if(stopped)return;
+   if(document.hidden || mutationLock.current){timer=setTimeout(advance,500);return;}
+   try{const result=await api('campaign/prepare',{campaignId:sendingState.id});if(stopped)return;setPreparationRequestError('');await refreshSending(false);if(result.preparation?.status==='Preparing')timer=setTimeout(advance,result.preparation.busy?1000:150);}
+   catch(e){if(!stopped){setPreparationRequestError(sendingState.id || '');report(e);await refreshSending(false).catch(()=>{});}}
+  };
+  void advance();return()=>{stopped=true;clearTimeout(timer);};
+ },[loaded,usageBlocked,unauthorized,sendingState.id,sendingState.backendStatus,preparationRetry,refreshSending,report]);
+
  const perform=async(work:()=>Promise<unknown>)=>{if(mutationLock.current)throw new Error('Please wait for the current operation.');mutationLock.current=true;setBusy(true);setError('');try{await work();try{await refresh();await refreshSending();}catch(e){report(new Error('Saved successfully, but refreshing failed. Reload before repeating this action. '+(e as Error).message));}return true;}catch(e){report(e);throw e;}finally{mutationLock.current=false;setBusy(false);}};
  // Catch event-handler rejections centrally; forms still await and retain their drafts on failure.
  const action=(work:()=>Promise<unknown>)=>perform(work);
@@ -88,7 +103,14 @@ export default function App() {
  const toggleTheme=()=>setTheme(t=>t==='light'?'dark':'light');
  const handleToggleRunStatus=()=>action(()=>api(sendingState.status==='running'?'campaign/pause':'campaign/resume-pending',{campaignId:sendingState.id}));
  const handleInitiateSending=()=>action(()=>api('sending/start',{}));
- const handleResolveRecord=(deliveryId:string,resolution:string)=>{if(resolution!=='retry')return Promise.resolve();if(!window.confirm('This email may already have been delivered. Check the sender’s Sent folder first. Retry with duplicate risk?'))return Promise.resolve();return action(()=>api('campaign/retry-uncertain',{deliveryId}));};
+ const handleResolveRecord=(deliveryId:string,resolution:string)=>{
+  const record=sendingState.records.find(r=>r.id===deliveryId);
+  if(resolution==='retry' && record?.result==='Needs review'){
+   if(!window.confirm('This email may already have been delivered. Check the sender’s Sent folder first. Retry with duplicate risk?'))return Promise.resolve();
+   return action(()=>api('campaign/retry-uncertain',{deliveryId}));
+  }
+  return action(()=>api('campaign/review',{campaignId:sendingState.id,deliveryId,action:resolution}));
+ };
  const handleSelectThread=async(id:string,loadOlder=false)=>{
   selectedThreadRef.current=id;setSelectedThreadId(id);
   try{
@@ -124,7 +146,7 @@ export default function App() {
  const handleUpdateDailyLimit=(id:string,cap:number)=>action(()=>api('account/cap',{id,cap}));
  const handleConnectAccount=(p:any)=>action(async()=>{const result=await api('account/connect',{email:p.email,appPassword:p.appPassword});await api('account/cap',{id:result.id,cap:p.dailyLimit});});
  const handleRunDnsCheck=(id:string)=>action(()=>api('account/health/check',{accountId:id,force:true,suppressNotification:true}));
- const saveSettings=(next:WorkspaceSettings)=>action(()=>api('settings',{cap:next.dailyWorkspaceCap,workspaceName:next.workspaceName,healthNotificationEmail:next.healthNotificationEmail || ''}));
+ const saveSettings=(next:WorkspaceSettings)=>action(()=>api('settings',{cap:next.dailyWorkspaceCap,workspaceName:next.workspaceName,healthNotificationEmail:next.healthNotificationEmail || '',openTracking:Boolean(next.openTracking),planOpenTracking:Boolean(next.planOpenTracking),includeSpamFolders:Boolean(next.includeSpamFolders)}));
  const nextLeadPage=()=>refresh(leadPage.nextCursor).catch(report);
  const syncMail=async(includeSent=false,retryOnly=false)=>{
   if(mutationLock.current)return;mutationLock.current=true;setBusy(true);setError('');
@@ -232,8 +254,11 @@ export default function App() {
               accounts={accounts}
               onToggleRunStatus={handleToggleRunStatus}
               onCancel={()=>action(async()=>{await api('campaign/cancel',{campaignId:sendingState.id});setNotice('Campaign cancelled. Import new leads and initiate a new campaign when ready.');})}
+              preparationRequestFailed={preparationRequestError===sendingState.id}
+              onResumePreparation={()=>{setError('');setPreparationRequestError('');setPreparationRetry(n=>n+1);}}
               onRebalance={()=>action(async()=>{const result=await api('campaign/rebalance',{campaignId:sendingState.id});setNotice(`Queued work updated: ${result.queued} emails across ${result.accounts} accounts. Resume queued when ready.`);})}
               onInitiateSending={handleInitiateSending}
+              onResolveAll={resolution=>action(()=>api('campaign/review',{campaignId:sendingState.id,action:resolution}))}
               onResolveRecord={handleResolveRecord}
             />
           )}

@@ -24,6 +24,7 @@ export interface DeliveryRecord {
 }
 
 export interface SendingState {
+  preparation?:{phase:string;total:number;prepared:number;senders:number;readySenders:number;error?:string|null};
   id?: string;
   backendStatus?: string;
   inFlight?: number;
@@ -173,4 +174,6 @@ export interface WorkspaceSettings {
   notifyOnReply: boolean;
   notifyOnBouncePause: boolean;
   dailyDigestTime: string;
+  includeSpamFolders: boolean;
+  planOpenTracking: boolean;
 }

@@ -166,7 +166,7 @@ test('body-only campaign messages omit the subject header',()=>{
 test('scheduled sender processes at most 2250 messages with 150 concurrent requests per tick',async()=>{
  const originalFetch=globalThis.fetch;
  let calls=0,active=0,maximumActive=0;
- globalThis.fetch=async()=>{
+ globalThis.fetch=async(url)=>{if(String(url).endsWith('/prepare-tick'))return new Response(JSON.stringify({ok:true,preparing:false,dispatchReady:true}));
   calls++;active++;maximumActive=Math.max(maximumActive,active);
   await Promise.resolve();
   active--;
@@ -317,16 +317,16 @@ test('CSV quoted fields, deduplication and invalid addresses',()=>{
 test('scheduler bounds contention retries and never retries an unconfirmed request',async()=>{
  const originalFetch=globalThis.fetch;let calls=0;
  try{
- globalThis.fetch=async()=>{calls++;return new Response(JSON.stringify({busy:true}),{headers:{'Content-Type':'application/json'}});};
+ globalThis.fetch=async(url)=>{if(String(url).endsWith('/prepare-tick'))return new Response(JSON.stringify({ok:true,preparing:false,dispatchReady:true}));calls++;return new Response(JSON.stringify({busy:true}),{headers:{'Content-Type':'application/json'}});};
  await scheduledSender.scheduled({},{DASHBOARD_API_URL:'https://dashboard.example',BACKGROUND_CRON_SECRET:'local-only'});assert.equal(calls,4500);
- calls=0;globalThis.fetch=async()=>{calls++;throw new Error('No confirmation');};await scheduledSender.scheduled({},{DASHBOARD_API_URL:'https://dashboard.example',BACKGROUND_CRON_SECRET:'local-only'});assert.ok(calls<=150);
+ calls=0;globalThis.fetch=async(url)=>{if(String(url).endsWith('/prepare-tick'))return new Response(JSON.stringify({ok:true,preparing:false,dispatchReady:true}));calls++;throw new Error('No confirmation');};await scheduledSender.scheduled({},{DASHBOARD_API_URL:'https://dashboard.example',BACKGROUND_CRON_SECRET:'local-only'});assert.ok(calls<=150);
  }finally{globalThis.fetch=originalFetch;}
 });
 
 
 test('scheduler continues definite deferrals but stops on an embedded streamed error',async()=>{
  const originalFetch=globalThis.fetch;let calls=0;
- try{globalThis.fetch=async()=>{calls++;return new Response(JSON.stringify({deferred:true,httpStatus:200}));};await scheduledSender.scheduled({},{DASHBOARD_API_URL:'https://dashboard.example',BACKGROUND_CRON_SECRET:'local-only'});assert.equal(calls,2250);
- calls=0;globalThis.fetch=async()=>{calls++;return new Response(JSON.stringify({error:'Held',httpStatus:503}));};await scheduledSender.scheduled({},{DASHBOARD_API_URL:'https://dashboard.example',BACKGROUND_CRON_SECRET:'local-only'});assert.ok(calls<=150);
+ try{globalThis.fetch=async(url)=>{if(String(url).endsWith('/prepare-tick'))return new Response(JSON.stringify({ok:true,preparing:false,dispatchReady:true}));calls++;return new Response(JSON.stringify({deferred:true,httpStatus:200}));};await scheduledSender.scheduled({},{DASHBOARD_API_URL:'https://dashboard.example',BACKGROUND_CRON_SECRET:'local-only'});assert.equal(calls,2250);
+ calls=0;globalThis.fetch=async(url)=>{if(String(url).endsWith('/prepare-tick'))return new Response(JSON.stringify({ok:true,preparing:false,dispatchReady:true}));calls++;return new Response(JSON.stringify({error:'Held',httpStatus:503}));};await scheduledSender.scheduled({},{DASHBOARD_API_URL:'https://dashboard.example',BACKGROUND_CRON_SECRET:'local-only'});assert.ok(calls<=150);
  }finally{globalThis.fetch=originalFetch;}
 });

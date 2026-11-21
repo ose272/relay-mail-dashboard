@@ -1,3 +1,5 @@
+import {finishAttemptSql,reviewDeliveries} from '../../src/campaign-state.mjs';
+import {createPreparation,continuePreparation,continueNextPreparation,preparationProgress,PreparationError} from '../../src/campaign-preparation.mjs';
 import {cancelCampaign} from '../../src/campaign-control.mjs';
 import {rebalanceCampaign} from '../../src/rebalance.mjs';
 import {mergeConversation} from '../../src/conversations.mjs';
@@ -249,9 +251,12 @@ async function loadState(db, options = {}) {
   const leadStatus = leadScope === 'archived' ? 'Archived' : 'Ready';
   const cursorSql = cursor ? 'AND (created_at, email, id) > (?, ?, ?)' : '';
   const leadBindings = cursor ? [leadStatus, ...cursor, leadPageSize + 1] : [leadStatus, leadPageSize + 1];
-  const [settingsResult, healthEmailResult, accountsResult, leadsResult, leadCountsResult, templatesResult, campaignsResult, recentMessagesResult, healthEventsResult, importBatchesResult] = await Promise.all([
+  const [settingsResult, healthEmailResult, openTrackingResult, planOpenTrackingResult, includeSpamFoldersResult, accountsResult, leadsResult, leadCountsResult, templatesResult, campaignsResult, recentMessagesResult, healthEventsResult, importBatchesResult] = await Promise.all([
     db.prepare('SELECT value FROM app_settings WHERE key = ?').bind('defaultCap').first(),
     db.prepare('SELECT value FROM app_settings WHERE key = ?').bind('healthNotificationEmail').first(),
+    db.prepare('SELECT value FROM app_settings WHERE key = ?').bind('openTracking').first(),
+    db.prepare('SELECT value FROM app_settings WHERE key = ?').bind('planOpenTracking').first(),
+    db.prepare('SELECT value FROM app_settings WHERE key = ?').bind('includeSpamFolders').first(),
     db.prepare(`
       SELECT id, email, cap,
         (SELECT COUNT(*) FROM campaign_deliveries d WHERE d.account_id = accounts.id AND d.status = 'sent' AND d.sent_at >= ?) AS used,
@@ -307,6 +312,9 @@ async function loadState(db, options = {}) {
   return {
     workspaceName: (await db.prepare("SELECT value FROM app_settings WHERE key = 'workspaceName'").first())?.value || 'Relay Mail',
     cap: Number(settingsResult?.value || 40),
+    openTracking: openTrackingResult?.value === '1',
+    planOpenTracking: planOpenTrackingResult?.value === '1',
+    includeSpamFolders: includeSpamFoldersResult?.value === '1',
     accounts: resultRows(accountsResult).map(account => ({
       id: account.id,
       email: account.email,
@@ -407,8 +415,8 @@ async function loadState(db, options = {}) {
 async function loadSendingStatus(db, summary = false) {
   const result = await db.prepare(`
     SELECT id, status, created_at, planned_sends, sent_count, pending_count,
-      uncertain_count, failed_count, failure_codes,cancelled_count, in_flight_count, next_send_at
-    FROM campaigns
+      uncertain_count, failed_count, failure_codes,cancelled_count, in_flight_count, next_send_at,p.phase AS prep_phase,p.total_count AS prep_total,p.prepared_count,p.total_senders,p.prepared_senders,p.error_code
+    FROM campaigns LEFT JOIN campaign_preparations p ON p.campaign_id=campaigns.id
     WHERE name = 'Direct send'
     ORDER BY created_at DESC
     LIMIT ${summary ? 1 : 10}
@@ -426,6 +434,7 @@ async function loadSendingStatus(db, summary = false) {
     inFlight: Number(run.in_flight_count || 0),
     nextSendAt: run.next_send_at,
     failureCodes: String(run.failure_codes || '').split(',').filter(Boolean),
+    preparation:run.status==='Preparing'?{phase:run.prep_phase || 'legacy',total:Number(run.prep_total || run.planned_sends || 0),prepared:Number(run.prepared_count || 0),senders:Number(run.total_senders || 0),readySenders:Number(run.prepared_senders || 0),error:run.error_code || (!run.prep_phase?'LEGACY_PREPARATION_REVIEW':null)}:undefined,
     liveReady: true
   }));
 }
@@ -505,48 +514,6 @@ async function insertAccounts(db, rows) {
   return added;
 }
 
-async function insertCampaignDeliveries(db, campaignId, assignments, createdAt) {
-  let statements = [], values = [];
-  const flush = async () => {
-    if (!statements.length) return;
-    await db.batch(statements);
-    statements = [];
-  };
-  const addStatement = async () => {
-    if (!values.length) return;
-    const placeholders = values.map(() => '(?, ?, ?, ?, ?, ?, ?, ?)').join(', ');
-    statements.push(db.prepare(`
-      INSERT INTO campaign_deliveries (
-        id, campaign_id, batch_no, day_no, lead_id, account_id, template_id, created_at
-      ) VALUES ${placeholders}
-    `).bind(...values.flat()));
-    values = [];
-    if (statements.length === 100) await flush();
-  };
-  for (const assignment of assignments) {
-    for (const leadId of assignment.leadIds) {
-      values.push([
-        crypto.randomUUID(),
-        campaignId,
-        assignment.batch,
-        assignment.day,
-        leadId,
-        assignment.accountId,
-        assignment.templateId,
-        createdAt
-      ]);
-      if (values.length === 10) await addStatement();
-    }
-  }
-  await addStatement();
-  await flush();
-  const plannedSends = assignments.reduce((total, assignment) => total + assignment.leadIds.length, 0);
-  await db.prepare(`
-    UPDATE campaigns SET planned_sends = ?, pending_count = ? WHERE id = ?
-  `).bind(plannedSends, plannedSends, campaignId).run();
-  await seedSenderQueue(db,campaignId);
-}
-
 function personalize(value, lead) {
   return value.replace(/{{\s*(name|store|email)\s*}}/g, (_, field) => lead[field] || '');
 }
@@ -557,6 +524,14 @@ async function handlePost(request, env, path) {
   if (!request.headers.get('Content-Type')?.startsWith('application/json')) throw new HttpError(415, 'JSON required.');
   const body = await readJson(request);
   const db = env.DB;
+
+  if(path==='/api/internal/prepare-tick')return jsonResponse(200,{ok:true,...await continueNextPreparation(db)});
+  if(path==='/api/campaign/prepare'){
+    if(typeof body.campaignId!=='string')throw new HttpError(400,'Choose a campaign to prepare.');
+    const current=await preparationProgress(db,body.campaignId);
+    if(!current)throw new HttpError(404,'Campaign not found.');
+    return jsonResponse(200,{ok:true,preparation:await continuePreparation(db,body.campaignId)});
+  }
 
   if (path === '/api/internal/send-tick') {
     const activeRun = await db.prepare(`
@@ -973,6 +948,9 @@ async function handlePost(request, env, path) {
     await db.batch([
       ...(healthEmail !== undefined ? [db.prepare("INSERT INTO app_settings (key, value) VALUES ('healthNotificationEmail', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value").bind(healthEmail)] : []),
       ...(typeof body.workspaceName === 'string' ? [db.prepare("INSERT INTO app_settings (key, value) VALUES ('workspaceName', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value").bind(body.workspaceName.trim().slice(0, 100) || 'Relay Mail')] : []),
+      ...(body.openTracking !== undefined ? [db.prepare("INSERT INTO app_settings (key, value) VALUES ('openTracking', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value").bind(body.openTracking ? '1' : '0')] : []),
+      ...(body.planOpenTracking !== undefined ? [db.prepare("INSERT INTO app_settings (key, value) VALUES ('planOpenTracking', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value").bind(body.planOpenTracking ? '1' : '0')] : []),
+      ...(body.includeSpamFolders !== undefined ? [db.prepare("INSERT INTO app_settings (key, value) VALUES ('includeSpamFolders', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value").bind(body.includeSpamFolders ? '1' : '0')] : []),
       db.prepare('INSERT INTO app_settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value').bind('defaultCap', String(cap)),
       db.prepare('UPDATE accounts SET cap = ?').bind(cap)
     ]);
@@ -981,7 +959,7 @@ async function handlePost(request, env, path) {
 
   if (path === '/api/sending/start') {
     const activeDirectSend = await db.prepare(`
-      SELECT c.id, c.status, c.planned_sends AS planned,
+      SELECT c.id, c.status, c.created_at, c.planned_sends AS planned,
         c.sent_count AS sent, c.pending_count AS pending
       FROM campaigns c
       WHERE c.name = 'Direct send'
@@ -990,8 +968,10 @@ async function handlePost(request, env, path) {
       ORDER BY c.created_at DESC LIMIT 1
     `).first();
     if (activeDirectSend) {
-      if (activeDirectSend.status === 'Preparing') {
-        throw new HttpError(409, 'A direct send is being prepared. Wait a moment, then try again.');
+      if(activeDirectSend.status==='Preparing'){
+        const progress=await preparationProgress(db,activeDirectSend.id);
+        if(progress.phase==='legacy')throw new HttpError(409,'An earlier campaign has no resumable preparation snapshot. Review or cancel it before starting a replacement. No history was removed.','LEGACY_PREPARATION_REVIEW');
+        return jsonResponse(202,{ok:true,id:activeDirectSend.id,plannedSends:progress.total,pending:Number(activeDirectSend.pending),preparing:true,preparation:progress,resumed:true});
       }
       if (activeDirectSend.status === 'Needs review') {
         throw new HttpError(409, 'This send has an unconfirmed email. Review it in Sending activity before continuing.');
@@ -1061,48 +1041,17 @@ async function handlePost(request, env, path) {
     }));
     const id = crypto.randomUUID();
     const createdAt = new Date().toISOString();
-    try {
-      await db.prepare(`
-        INSERT INTO campaigns (id, name, template_id, status, created_at, remaining, days, allocation_json)
-        VALUES (?, 'Direct send', ?, 'Preparing', ?, ?, ?, ?)
-      `).bind(
-        id,
-        planned.assignments[0].templateId,
-        createdAt,
-        allocation.remaining,
-        allocation.days,
-        JSON.stringify(summary)
-      ).run();
-    } catch (error) {
-      const competingRun = await db.prepare(`
-        SELECT id FROM campaigns
-        WHERE name = 'Direct send' AND status IN ('Preparing', 'Dry run', 'Sending', 'Scheduled', 'Paused', 'Needs review', 'User paused')
-        ORDER BY created_at DESC LIMIT 1
-      `).first();
-      if (competingRun) throw new HttpError(409, 'A direct send just started in another dashboard tab. Refresh and retry if it is not shown in Sending.');
-      throw error;
+    try{
+      const preparation=await createPreparation(db,{id,name:'Direct send',templateId:planned.assignments[0].templateId,createdAt,remaining:allocation.remaining,days:allocation.days,summary,assignments:planned.assignments,targetStatus:'Sending'});
+      return jsonResponse(202,{ok:true,id,plannedSends:allocation.sends,sent:0,pending:0,preparing:true,preparation,resumed:false});
+    }catch(error){
+      const competing=await db.prepare("SELECT id,status FROM campaigns WHERE name='Direct send' AND status IN ('Preparing','Dry run','Sending','Scheduled','Paused','Needs review','User paused') ORDER BY created_at DESC LIMIT 1").first();
+      if(competing?.status==='Preparing'){const progress=await preparationProgress(db,competing.id);return jsonResponse(202,{ok:true,id:competing.id,preparing:true,preparation:progress,resumed:true});}
+      if(competing)throw new HttpError(409,'A campaign started in another tab. Refresh to see its current state.','CAMPAIGN_CONFLICT');
+      if(error instanceof PreparationError)throw new HttpError(400,error.message,error.code);
+      console.error('Campaign preparation snapshot could not be saved:',error);
+      throw new HttpError(503,'Campaign preparation could not be saved. Retry initiation; existing campaign history is unchanged.','PREPARATION_SAVE_FAILED');
     }
-    try {
-      await insertCampaignDeliveries(db, id, planned.assignments, createdAt);
-      await db.prepare("UPDATE campaigns SET status = 'Sending', next_send_at = ? WHERE id = ?")
-        .bind(createdAt, id).run();
-      await db.prepare(`
-        UPDATE campaigns SET status = 'Superseded'
-        WHERE id != ? AND status IN ('Dry run', 'Paused', 'Scheduled')
-      `).bind(id).run();
-    } catch (error) {
-      await db.prepare('DELETE FROM campaign_deliveries WHERE campaign_id = ?').bind(id).run();
-      await db.prepare('DELETE FROM campaigns WHERE id = ?').bind(id).run();
-      throw error;
-    }
-    return jsonResponse(200, {
-      ok: true,
-      id,
-      plannedSends: allocation.sends,
-      sent: 0,
-      pending: allocation.sends,
-      resumed: false
-    });
   }
 
   if (path === '/api/campaign') {
@@ -1150,35 +1099,8 @@ async function handlePost(request, env, path) {
     }));
     const id = crypto.randomUUID();
     const createdAt = new Date().toISOString();
-    await db.prepare(`
-      INSERT INTO campaigns (id, name, template_id, status, created_at, remaining, days, allocation_json)
-      VALUES (?, ?, ?, 'Preparing', ?, ?, ?, ?)
-    `).bind(
-      id,
-      body.name.trim(),
-      planned.assignments[0].templateId,
-      createdAt,
-      allocation.remaining,
-      allocation.days,
-      JSON.stringify(summary)
-    ).run();
-    try {
-      await insertCampaignDeliveries(db, id, planned.assignments, createdAt);
-      await db.prepare("UPDATE campaigns SET status = 'Dry run' WHERE id = ?").bind(id).run();
-    } catch (error) {
-      await db.prepare('DELETE FROM campaign_deliveries WHERE campaign_id = ?').bind(id).run();
-      await db.prepare('DELETE FROM campaigns WHERE id = ?').bind(id).run();
-      throw error;
-    }
-    return jsonResponse(200, {
-      ok: true,
-      id,
-      sends: allocation.sends,
-      remaining: allocation.remaining,
-      days: allocation.days,
-      batches: allocation.batches,
-      assignments: summary
-    });
+    const preparation=await createPreparation(db,{id,name:body.name.trim(),templateId:planned.assignments[0].templateId,createdAt,remaining:allocation.remaining,days:allocation.days,summary,assignments:planned.assignments,targetStatus:'Dry run'});
+    return jsonResponse(202,{ok:true,id,sends:allocation.sends,remaining:allocation.remaining,days:allocation.days,batches:allocation.batches,assignments:summary,preparing:true,preparation});
   }
 
   if (path === '/api/read') {
@@ -1502,6 +1424,12 @@ async function handlePost(request, env, path) {
     return jsonResponse(200, { ok: true, deliveries: rows });
   }
 
+  if(path==='/api/campaign/review'){
+    if(typeof body.campaignId!=='string')throw new HttpError(400,'Choose a campaign.');
+    try{return jsonResponse(200,{ok:true,...await reviewDeliveries(db,{campaignId:body.campaignId,deliveryId:body.deliveryId,action:body.action})});}
+    catch(error){throw new HttpError(409,'The selected review action is not eligible. Unconfirmed deliveries need an explicit Sent-folder check.','REVIEW_NOT_ELIGIBLE');}
+  }
+
   if (path === '/api/campaign/retry-uncertain') {
     const deliveryId = typeof body.deliveryId === 'string' ? body.deliveryId : '';
     const delivery = deliveryId
@@ -1709,10 +1637,7 @@ async function handlePost(request, env, path) {
             SET status = 'failed', retry_after = NULL, last_error = ?
             WHERE id = ? AND status = 'sending'
           `).bind(diagnostic, delivery.id),
-          db.prepare(`
-            UPDATE campaigns SET status = 'Sending', next_send_at = ?
-            WHERE id = ? AND status IN ('Sending','Scheduled','Dry run','Paused')
-          `).bind(nowIso, campaignId)
+          db.prepare(finishAttemptSql).bind(nowIso, campaignId)
         ]);
         return jsonResponse(200, {
           ok: true,
@@ -1742,7 +1667,7 @@ async function handlePost(request, env, path) {
       `).bind(crypto.randomUUID(), delivery.id, text, sentAt, messageId, `campaign:${delivery.id}`),
       db.prepare("UPDATE campaign_deliveries SET status = 'sent', sent_at = ? WHERE id = ? AND status = 'sending'")
         .bind(sentAt, delivery.id),
-      db.prepare("UPDATE campaigns SET status = 'Sending', next_send_at = ? WHERE id = ? AND status IN ('Sending','Scheduled','Dry run','Paused')")
+      db.prepare(finishAttemptSql)
         .bind(sentAt, campaignId)
     ]);
     return jsonResponse(200, { ok: true, sent: true, sender: delivery.sender });
@@ -1910,12 +1835,12 @@ async function handleRequest({ request, env }) {
             l.email AS recipient, l.name, a.email AS sender, t.subject, t.name AS plan_name
           FROM campaign_deliveries d JOIN leads l ON l.id = d.lead_id
           JOIN accounts a ON a.id = d.account_id LEFT JOIN templates t ON t.id = d.template_id
-          WHERE d.campaign_id = ? AND d.status = ? AND NOT EXISTS(SELECT 1 FROM delivery_bounces b WHERE b.delivery_id=d.id) ORDER BY d.created_at DESC, d.id DESC LIMIT 50
+          WHERE d.campaign_id = ? AND d.status = ? AND (d.status='uncertain' OR d.review_dismissed_at IS NULL) AND NOT EXISTS(SELECT 1 FROM delivery_bounces b WHERE b.delivery_id=d.id) ORDER BY d.created_at DESC, d.id DESC LIMIT 50
         `).bind(runs[0].id, status).all()));
         const bounced=await db.prepare(`SELECT d.id,'failed' AS status,d.started_at,b.received_at AS sent_at,d.created_at,b.code AS last_error,
           l.email AS recipient,l.name,a.email AS sender,t.subject,t.name AS plan_name
           FROM (SELECT delivery_id,code,received_at FROM delivery_bounces WHERE campaign_id=? ORDER BY received_at DESC,delivery_id DESC LIMIT 50) b
-          JOIN campaign_deliveries d ON d.id=b.delivery_id JOIN leads l ON l.id=d.lead_id JOIN accounts a ON a.id=d.account_id LEFT JOIN templates t ON t.id=d.template_id`).bind(runs[0].id).all();
+          JOIN campaign_deliveries d ON d.id=b.delivery_id AND d.review_dismissed_at IS NULL JOIN leads l ON l.id=d.lead_id JOIN accounts a ON a.id=d.account_id LEFT JOIN templates t ON t.id=d.template_id`).bind(runs[0].id).all();
         const seen=new Map();
         deliveries=[...groups.flatMap(resultRows),...resultRows(bounced)].sort((a,b)=>String(b.sent_at || b.started_at || b.created_at).localeCompare(String(a.sent_at || a.started_at || a.created_at))).filter(d=>{const count=(seen.get(d.status)||0)+1;seen.set(d.status,count);return count<=50;});
       }
@@ -1925,6 +1850,7 @@ async function handleRequest({ request, env }) {
     if (request.method !== 'POST') return jsonResponse(405, { error: 'Method not allowed.' });
     return await handlePost(request, env, path);
   } catch (error) {
+    if(error instanceof PreparationError)return jsonResponse(503,{error:error.message,code:error.code});
     if (error instanceof HttpError) return jsonResponse(error.status, {
       error: error.message,
       ...(error.code ? { code: error.code } : {})

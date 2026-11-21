@@ -1,5 +1,5 @@
 import React, { useMemo, useState } from 'react';
-import { ArrowUpDown, RotateCcw, CheckCircle2 } from 'lucide-react';
+import { ArrowUpDown, RotateCcw, CheckCircle2, Trash2 } from 'lucide-react';
 import {
   ConnectedAccount,
   DeliveryRecord,
@@ -24,6 +24,8 @@ import {
 interface SendingPageProps {
   sendingState: SendingState;
   accounts: ConnectedAccount[];
+  onResumePreparation:()=>void;
+  preparationRequestFailed?:boolean;
   onCancel:()=>Promise<unknown>;
   onRebalance:()=>Promise<unknown>;
   onToggleRunStatus: () => Promise<unknown>;
@@ -33,6 +35,7 @@ interface SendingPageProps {
     subject: string;
     recipients: string[];
   }) => Promise<unknown>;
+  onResolveAll?:(resolution:'retry'|'dismiss')=>Promise<unknown>;
   onResolveRecord: (recordId: string, resolution: 'retry' | 'dismiss') => Promise<unknown>;
 }
 
@@ -42,8 +45,8 @@ export const SendingPage: React.FC<SendingPageProps> = ({
   sendingState,
   accounts,
   onToggleRunStatus,
-  onInitiateSending, onRebalance, onCancel,
-  onResolveRecord,
+  onInitiateSending, onRebalance, onCancel, onResumePreparation, preparationRequestFailed,
+  onResolveRecord,onResolveAll,
 }) => {
   const [sortLatestFirst, setSortLatestFirst] = useState(true);
   const [statusFilter, setStatusFilter] = useState<TableFilter>('All');
@@ -204,13 +207,13 @@ export const SendingPage: React.FC<SendingPageProps> = ({
             {!sendingState.id ? <StatusBadge label="NO CAMPAIGN" tone="neutral" /> : sendingState.status === 'completed' ? <StatusBadge label={sendingState.backendStatus==='Cancelled'?'CANCELLED':'COMPLETE'} tone={sendingState.backendStatus==='Cancelled'?'neutral':'success'} /> : sendingState.status === 'paused' ? (
               <StatusBadge label="PAUSED" tone="warning" icon="pause" size="md" />
             ) : (
-              <StatusBadge label={sendingState.backendStatus==='Scheduled'?'SCHEDULED':'RUNNING'} tone="success" icon="check" size="md" />
+              <StatusBadge label={sendingState.backendStatus==='Preparing'?'PREPARING':sendingState.backendStatus==='Scheduled'?'SCHEDULED':'RUNNING'} tone="success" icon="check" size="md" />
             )}
 
             {sendingState.id && <PortfolioPillButton
               variant="primary"
               size="md"
-              disabled={!sendingState.id || sendingState.status === 'completed'}
+              disabled={!sendingState.id || sendingState.status === 'completed' || sendingState.backendStatus==='Preparing'}
               onClick={onToggleRunStatus}
               className="min-w-[140px]"
             >
@@ -224,6 +227,7 @@ export const SendingPage: React.FC<SendingPageProps> = ({
         <div className="p-6 space-y-6">
           {sendingState.id && sendingState.sentCount===0 && sendingState.queuedCount>0 && <p className="text-[13px] text-[var(--color-muted)]">No messages have been confirmed sent yet. Delivery progress increases only after the sender confirms a send.</p>}
           {sendingState.id && sendingState.status==='paused' && !sendingState.needsReviewCount && sendingState.queuedCount>0 && <div className="flex flex-col sm:flex-row sm:items-center gap-3 text-[12px] text-[var(--color-muted)]"><PortfolioPillButton variant="secondary" onClick={onRebalance}>Use newly connected accounts</PortfolioPillButton><span>Redistribute queued work across connected accounts before resuming.</span></div>}
+          {sendingState.backendStatus==='Preparing' && <div role="status" className="space-y-3 p-4 rounded-[12px] bg-[var(--color-subtle)]"><strong className="text-[14px]">{(sendingState.preparation?.error || preparationRequestFailed)?'Preparation interrupted':'Preparing campaign'}</strong><p className="text-[13px]">{sendingState.preparation?.prepared || 0} of {sendingState.preparation?.total || sendingState.plannedTotal} delivery records saved · {sendingState.preparation?.readySenders || 0} of {sendingState.preparation?.senders || 0} sender queues ready</p><progress aria-label="Campaign preparation progress" className="w-full h-2" max={(sendingState.preparation?.total || 0)+(sendingState.preparation?.senders || 0)||1} value={(sendingState.preparation?.prepared || 0)+(sendingState.preparation?.readySenders || 0)}/><p className="text-[12px] text-[var(--color-muted)]">Sending begins after delivery records and sender queues are ready. Progress is saved after each batch.</p>{(sendingState.preparation?.error || preparationRequestFailed) && sendingState.preparation?.error!=='LEGACY_PREPARATION_REVIEW' && <button type="button" className="underline text-[13px]" onClick={onResumePreparation}>Resume preparation</button>}</div>}
           {/* Delivery Progress */}
           <div className="space-y-2.5">
             <div className="flex items-center justify-between gap-4">
@@ -386,6 +390,29 @@ export const SendingPage: React.FC<SendingPageProps> = ({
           </div>
         ) : (
           <div className="space-y-4">
+            <div className="flex items-center justify-between pb-3 border-b border-[var(--color-border)] text-[13px]">
+              <span className="text-[var(--color-muted)]">
+                {flaggedRecords.length} message{flaggedRecords.length === 1 ? '' : 's'} to review
+              </span>
+              {onResolveAll && (
+                <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={() => onResolveAll?.('dismiss')}
+                    className="px-3 py-1.5 rounded-[8px] border border-[var(--color-border)] text-[var(--color-danger)] text-[12px] font-medium hover:bg-red-50 dark:hover:bg-red-950/20 transition-colors cursor-pointer"
+                  >
+                    Dismiss failed notices
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => onResolveAll?.('retry')}
+                    className="px-3 py-1.5 rounded-[8px] bg-[var(--color-brand)] text-white text-[12px] font-medium hover:opacity-90 transition-opacity cursor-pointer"
+                  >
+                    Retry rejected messages
+                  </button>
+                </div>
+              )}
+            </div>
             {flaggedRecords.map((rec: DeliveryRecord) => (
               <div
                 key={rec.id}
@@ -417,12 +444,20 @@ export const SendingPage: React.FC<SendingPageProps> = ({
                 <div className="flex items-center justify-end gap-2.5">
                   <button
                     type="button"
-                    disabled={rec.result !== 'Needs review'}
+                    disabled={rec.result==='Needs review'}
+                    onClick={() => onResolveRecord(rec.id, 'dismiss')}
+                    className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-[10px] border border-[var(--color-border)] text-[var(--color-danger)] text-[12px] font-medium hover:bg-red-50 dark:hover:bg-red-950/20 transition-colors cursor-pointer"
+                  >
+                    <Trash2 size={13} />
+                    <span>Dismiss</span>
+                  </button>
+                  <button
+                    type="button"
                     onClick={() => onResolveRecord(rec.id, 'retry')}
                     className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-[10px] bg-[var(--color-brand)] text-white text-[12px] font-medium hover:opacity-95 transition-opacity cursor-pointer"
                   >
                     <RotateCcw size={13} />
-                    <span>Retry with duplicate risk</span>
+                    <span>{rec.result === 'Needs review' ? 'Retry with duplicate risk' : 'Retry message'}</span>
                   </button>
                 </div>
               </div>
