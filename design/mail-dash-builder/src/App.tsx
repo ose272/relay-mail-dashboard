@@ -148,8 +148,9 @@ export default function App() {
  const handleRunDnsCheck=(id:string)=>action(()=>api('account/health/check',{accountId:id,force:true,suppressNotification:true}));
  const saveSettings=(next:WorkspaceSettings)=>action(()=>api('settings',{cap:next.dailyWorkspaceCap,workspaceName:next.workspaceName,healthNotificationEmail:next.healthNotificationEmail || '',openTracking:Boolean(next.openTracking),planOpenTracking:Boolean(next.planOpenTracking),includeSpamFolders:Boolean(next.includeSpamFolders)}));
  const nextLeadPage=()=>refresh(leadPage.nextCursor).catch(report);
+ const syncLock=useRef(false);
  const syncMail=async(includeSent=false,retryOnly=false)=>{
-  if(mutationLock.current)return;mutationLock.current=true;setBusy(true);setError('');
+  if(syncLock.current)return;syncLock.current=true;setError('');
   const targets=rawAccounts.current.filter(a=>a.hasCredentials && ['Connected','IMAP only'].includes(a.connection) && (!retryOnly || failedSyncAccounts.current.has(a.id)));
   failedSyncAccounts.current=new Set();lastSyncIncludeSent.current=includeSent;setSyncHadErrors(false);
   let completed=0,bounces=0,more=0,alreadySyncing=0;setNotice(`Checking up to 100 accounts at once · 0/${targets.length} completed`);
@@ -170,7 +171,7 @@ export default function App() {
    if(selectedThreadRef.current)await handleSelectThread(selectedThreadRef.current);
    setNotice(`Manual sync finished: ${completed} accounts checked · ${bounces} new bounced deliveries recorded.${alreadySyncing?` ${alreadySyncing} already syncing in another session.`:''}${more?' More messages remain; click Sync again to continue.':''}`);
    if(issues.length){setError(issues.join('; '));setSyncHadErrors(true);}
-  }catch(e){report(e);}finally{mutationLock.current=false;setBusy(false);}
+  }catch(e){report(e);}finally{syncLock.current=false;}
  };
 
  const reloadSyncStarted=useRef(false);
