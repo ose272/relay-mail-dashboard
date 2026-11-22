@@ -145,6 +145,14 @@ export default function App() {
  const handleToggleWarmup=()=>setError('Automated warmup is not available.');
  const handleUpdateDailyLimit=(id:string,cap:number)=>action(()=>api('account/cap',{id,cap}));
  const handleConnectAccount=(p:any)=>action(async()=>{const result=await api('account/connect',{email:p.email,appPassword:p.appPassword});await api('account/cap',{id:result.id,cap:p.dailyLimit});});
+ const healthCheckLock=useRef(false);
+ const [healthChecking,setHealthChecking]=useState(false),[healthProgress,setHealthProgress]=useState('');
+ const checkAllHealth=async()=>{
+  if(healthCheckLock.current)return;healthCheckLock.current=true;setHealthChecking(true);
+  const targets=rawAccounts.current.filter(a=>a.hasCredentials);let completed=0,failed=0;
+  setHealthProgress(`Checking account health: 0/${targets.length}`);
+  try{await runSyncPool(targets,async a=>{try{await api('account/health/check',{accountId:a.id,force:true,suppressNotification:true});}catch{failed++;}finally{completed++;setHealthProgress(`Checking account health: ${completed}/${targets.length} · ${failed} checks failed`);}},25);await refresh();setHealthProgress(`Health check finished: ${completed}/${targets.length} accounts checked · ${failed} requests failed.`);}catch(e){report(e);}finally{healthCheckLock.current=false;setHealthChecking(false);}
+ };
  const handleRunDnsCheck=(id:string)=>action(()=>api('account/health/check',{accountId:id,force:true,suppressNotification:true}));
  const saveSettings=(next:WorkspaceSettings)=>action(()=>api('settings',{cap:next.dailyWorkspaceCap,workspaceName:next.workspaceName,healthNotificationEmail:next.healthNotificationEmail || '',openTracking:Boolean(next.openTracking),planOpenTracking:Boolean(next.planOpenTracking),includeSpamFolders:Boolean(next.includeSpamFolders)}));
  const nextLeadPage=()=>refresh(leadPage.nextCursor).catch(report);
@@ -295,6 +303,9 @@ export default function App() {
               onUpdateDailyLimit={handleUpdateDailyLimit}
               onConnectAccount={handleConnectAccount}
               onRunDnsCheck={handleRunDnsCheck}
+              onCheckAllHealth={checkAllHealth}
+              healthChecking={healthChecking}
+              healthProgress={healthProgress}
             />
           )}
           {loaded && !unauthorized && activePage === 'settings' && (

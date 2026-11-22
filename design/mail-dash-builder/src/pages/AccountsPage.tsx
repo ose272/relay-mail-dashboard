@@ -18,6 +18,9 @@ import {
 
 interface AccountsPageProps {
   accounts: ConnectedAccount[];
+  onCheckAllHealth:()=>Promise<void>;
+  healthChecking:boolean;
+  healthProgress:string;
   onToggleAccountStatus: (id: string) => Promise<unknown>;
   onToggleWarmup: (id: string) => void;
   onUpdateDailyLimit: (id: string, dailyLimit: number) => Promise<unknown>;
@@ -37,7 +40,7 @@ export const AccountsPage: React.FC<AccountsPageProps> = ({
   onToggleWarmup,
   onUpdateDailyLimit,
   onConnectAccount,
-  onRunDnsCheck,
+  onRunDnsCheck,onCheckAllHealth,healthChecking,healthProgress,
 }) => {
   const [connectModalOpen, setConnectModalOpen] = useState(false);
   const [editingAccount, setEditingAccount] = useState<ConnectedAccount | null>(
@@ -84,6 +87,7 @@ export const AccountsPage: React.FC<AccountsPageProps> = ({
   const handleLimitSave=async(e:React.FormEvent)=>{e.preventDefault();if(!editingAccount || saving)return;setSaving(true);try{await onUpdateDailyLimit(editingAccount.id,limitDraft);setEditingAccount(null);}catch{}finally{setSaving(false);}};
   return (
     <div className="space-y-6">
+      <div className="flex flex-wrap items-center gap-3"><button type="button" disabled={healthChecking} onClick={()=>void onCheckAllHealth()} className="px-4 py-2 rounded-lg border border-[var(--color-border)] disabled:opacity-50">{healthChecking?'Checking account health…':'Check all account health'}</button>{healthProgress && <p role="status" className="text-sm">{healthProgress}</p>}</div>
       {/* Header */}
       <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
         <div>
