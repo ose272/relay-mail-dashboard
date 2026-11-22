@@ -180,8 +180,12 @@ export const LeadsPage: React.FC<LeadsPageProps> = ({
     }
   };
 
+  const [deletingBatches,setDeletingBatches]=useState(false);
+  const [deleteBatchError,setDeleteBatchError]=useState('');
   const handleConfirmDeleteBatches = async () => {
-    if (batchesPendingDelete.length === 0) return;
+    if (batchesPendingDelete.length === 0 || deletingBatches) return;
+    setDeletingBatches(true);setDeleteBatchError('');
+    try{
     const ids = batchesPendingDelete.map((b) => b.id);
     await onDeleteBatches(ids);
     setSelectedBatchIds((prev) => prev.filter((id) => !ids.includes(id)));
@@ -192,6 +196,7 @@ export const LeadsPage: React.FC<LeadsPageProps> = ({
       }
     }
     setBatchesPendingDelete([]);
+    }catch(e){setDeleteBatchError(e instanceof Error?e.message:'Batch deletion failed. Please retry.');}finally{setDeletingBatches(false);}
   };
 
   const handleExportCsv = () => {
@@ -781,7 +786,7 @@ export const LeadsPage: React.FC<LeadsPageProps> = ({
       {/* Confirm Delete Batch Modal */}
       <ModalShell
         open={batchesPendingDelete.length > 0}
-        onClose={() => setBatchesPendingDelete([])}
+        onClose={() => {if(!deletingBatches){setBatchesPendingDelete([]);setDeleteBatchError('');}}}
         title={
           batchesPendingDelete.length === 1
             ? `Delete "${batchesPendingDelete[0]?.name}"?`
@@ -790,6 +795,7 @@ export const LeadsPage: React.FC<LeadsPageProps> = ({
         subtitle="Batch-only unused leads are deleted. Leads shared with other batches remain; leads with send history are archived."
       >
         <div className="space-y-4">
+          {deleteBatchError && <p role="alert" className="text-[var(--color-danger)]">{deleteBatchError}</p>}
           <div className="rounded-[12px] border border-[var(--color-border)] bg-[var(--color-subtle)]/60 p-4 space-y-2">
             {batchesPendingDelete.map((b) => {
               const count = b.leadCount;
@@ -819,11 +825,12 @@ export const LeadsPage: React.FC<LeadsPageProps> = ({
             </button>
             <button
               type="button"
+              disabled={deletingBatches}
               onClick={handleConfirmDeleteBatches}
               className="inline-flex items-center gap-2 h-[44px] px-5 rounded-[70px] bg-[var(--color-danger)] text-white text-[13px] font-medium hover:opacity-95 transition-opacity cursor-pointer"
             >
               <Trash2 size={14} />
-              <span>Confirm delete</span>
+              <span>{deletingBatches?'Deleting batch…':'Confirm delete'}</span>
             </button>
           </div>
         </div>

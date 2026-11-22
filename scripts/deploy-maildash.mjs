@@ -2,11 +2,11 @@ import { readFile, writeFile } from 'node:fs/promises';
 import { spawnSync } from 'node:child_process';
 // The API requires the cached queue, usage guard, and bounce migrations. Fail closed instead of deploying against a
 // quota-blocked database or a schema that has not been updated yet.
-const schemaCheck=spawnSync(process.execPath,['node_modules/wrangler/bin/wrangler.js','d1','execute','relay-mail-dashboard','--remote','--config','wrangler.production.jsonc','--command',"SELECT name FROM d1_migrations WHERE name IN ('0026_cached_sender_budget.sql','0027_app_usage_guard.sql','0028_delivery_bounces.sql','0029_manual_sync_lease.sql','0030_campaign_cancellation.sql','0031_notification_deletion.sql','0032_plan_open_tracking.sql','0033_spam_replies.sql','0034_resumable_campaign_preparation.sql')",'--json'],{encoding:'utf8'});
+const schemaCheck=spawnSync(process.execPath,['node_modules/wrangler/bin/wrangler.js','d1','execute','relay-mail-dashboard','--remote','--config','wrangler.production.jsonc','--command',"SELECT name FROM d1_migrations WHERE name IN ('0026_cached_sender_budget.sql','0027_app_usage_guard.sql','0028_delivery_bounces.sql','0029_manual_sync_lease.sql','0030_campaign_cancellation.sql','0031_notification_deletion.sql','0032_plan_open_tracking.sql','0033_spam_replies.sql','0034_resumable_campaign_preparation.sql','0035_batch_delete_history_index.sql')",'--json'],{encoding:'utf8'});
 let applied=[];
 try{applied=JSON.parse(schemaCheck.stdout||'[]').flatMap(result=>result.results||[]);}catch{}
-if(schemaCheck.status || applied.length!==9){
- console.error('Deployment held: apply migrations 0026 through 0034 after D1 quota is available. No production configuration was changed.');
+if(schemaCheck.status || applied.length!==10){
+ console.error('Deployment held: apply migrations 0026 through 0035 after D1 quota is available. No production configuration was changed.');
  process.exit(1);
 }
 const original=await readFile('wrangler.jsonc');
