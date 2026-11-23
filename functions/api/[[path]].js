@@ -1,3 +1,4 @@
+import {applyIncomingState,applySentState} from '../../src/thread-state.mjs';
 import {finishAttemptSql,reviewDeliveries} from '../../src/campaign-state.mjs';
 import {createPreparation,continuePreparation,continueNextPreparation,preparationProgress,PreparationError} from '../../src/campaign-preparation.mjs';
 import {cancelCampaign} from '../../src/campaign-control.mjs';
@@ -1216,10 +1217,10 @@ async function handlePost(request, env, path) {
       if (!thread) {
         await db.prepare(`
           INSERT INTO threads (id, name, store, email, subject, account_id, unread, status)
-          VALUES (?, ?, '', ?, ?, ?, 1, 'Needs reply')
-        `).bind(threadId, message.fromName || message.fromAddress || 'Unknown sender', message.fromAddress, message.subject, account.id).run();
+          VALUES (?, ?, '', ?, ?, ?, ?, 'Needs reply')
+        `).bind(threadId, message.fromName || message.fromAddress || 'Unknown sender', message.fromAddress, message.subject, account.id,Number(message.unread!==false)).run();
       } else {
-        await db.prepare("UPDATE threads SET unread = 1, status = 'Needs reply' WHERE id = ?").bind(threadId).run();
+        await applyIncomingState(db,threadId,message);
       }
       if(message.providerThreadId)await db.prepare('UPDATE threads SET provider_thread_id=? WHERE id=? AND provider_thread_id IS NULL').bind(message.providerThreadId,threadId).run();
       const result = await db.prepare(`
@@ -1252,15 +1253,17 @@ async function handlePost(request, env, path) {
     for (const message of sent?.messages || []) {
       const externalId = `${account.id}:${message.externalId}`;
       await reconcileUncertainCampaignDelivery(db, message);
-      if (await db.prepare('SELECT id FROM messages WHERE external_id = ?').bind(externalId).first()) continue;
-      if (message.messageId && await db.prepare(`
-        SELECT m.id FROM messages m JOIN threads t ON t.id = m.thread_id
+      const existingSent=await db.prepare('SELECT id,thread_id FROM messages WHERE external_id = ?').bind(externalId).first();
+      if(existingSent){await applySentState(db,existingSent.thread_id,message.date);changedThreadIds.add(existingSent.thread_id);continue;}
+      const existingMessage=message.messageId ? await db.prepare(`
+        SELECT m.id,m.thread_id FROM messages m JOIN threads t ON t.id = m.thread_id
         WHERE t.account_id = ? AND m.message_id = ? LIMIT 1
-      `).bind(account.id, message.messageId).first()) continue;
+      `).bind(account.id, message.messageId).first():null;
+      if(existingMessage){await applySentState(db,existingMessage.thread_id,message.date);changedThreadIds.add(existingMessage.thread_id);continue;}
 
       const references = [...new Set([message.inReplyTo, ...message.references].filter(Boolean))].slice(-20);
-      let thread;
-      if (references.length) {
+      let thread=message.providerThreadId?await db.prepare('SELECT id,name,store,email,subject FROM threads WHERE account_id=? AND provider_thread_id=? LIMIT 1').bind(account.id,message.providerThreadId).first():null;
+      if (!thread && references.length) {
         const placeholders = references.map(() => '?').join(', ');
         thread = await db.prepare(`
           SELECT t.id, t.name, t.store, t.email, t.subject FROM threads t
@@ -1319,7 +1322,7 @@ async function handlePost(request, env, path) {
         externalId
       ).run();
       if (result.meta?.changes) {
-        if (thread) await db.prepare("UPDATE threads SET status = 'Replied', unread = 0 WHERE id = ?").bind(thread.id).run();
+        if(thread)await applySentState(db,threadId,message.date);
         imported += result.meta.changes;
         changedThreadIds.add(threadId);
       }

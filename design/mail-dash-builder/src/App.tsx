@@ -160,7 +160,7 @@ export default function App() {
  const saveSettings=(next:WorkspaceSettings)=>action(()=>api('settings',{cap:next.dailyWorkspaceCap,workspaceName:next.workspaceName,healthNotificationEmail:next.healthNotificationEmail || '',openTracking:Boolean(next.openTracking),planOpenTracking:Boolean(next.planOpenTracking),includeSpamFolders:Boolean(next.includeSpamFolders)}));
  const nextLeadPage=()=>refresh(leadPage.nextCursor).catch(report);
  const syncLock=useRef(false);
- const syncMail=async(includeSent=false,retryOnly=false)=>{
+ const syncMail=async(includeSent=true,retryOnly=false)=>{
   if(syncLock.current)return;syncLock.current=true;setError('');
   const targets=rawAccounts.current.filter(a=>a.hasCredentials && ['Connected','IMAP only'].includes(a.connection) && (!retryOnly || failedSyncAccounts.current.has(a.id)));
   failedSyncAccounts.current=new Set();lastSyncIncludeSent.current=includeSent;setSyncHadErrors(false);

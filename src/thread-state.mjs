@@ -1,0 +1,2 @@
+export async function applyIncomingState(db,threadId,message){return db.prepare("UPDATE threads SET status='Needs reply',unread=? WHERE id=? AND NOT EXISTS(SELECT 1 FROM messages WHERE thread_id=? AND time>?)").bind(Number(message.unread!==false),threadId,threadId,message.date).run();}
+export async function applySentState(db,threadId,date){return db.prepare("UPDATE threads SET status='Replied',unread=0 WHERE id=? AND (status<>'Replied' OR unread<>0) AND NOT EXISTS(SELECT 1 FROM messages WHERE thread_id=? AND direction='in' AND time>=?)").bind(threadId,threadId,date).run();}

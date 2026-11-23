@@ -38,7 +38,7 @@ export const InboxPage: React.FC<InboxPageProps> = ({
   onToggleRead,
 }) => {
   const [filter, setFilter] = useState<InboxFilter>('All');
-  const [includeSent,setIncludeSent]=useState(false);
+  const [includeSent,setIncludeSent]=useState(true);
   const [isMobile,setIsMobile]=useState(()=>window.matchMedia('(max-width:1023px)').matches);
   const [mobileThreadOpen,setMobileThreadOpen]=useState(()=>window.location.hash.startsWith('#conversation/'));
   const listRef=useRef<HTMLDivElement>(null),readerRef=useRef<HTMLDivElement>(null);
@@ -124,7 +124,7 @@ export const InboxPage: React.FC<InboxPageProps> = ({
         </div>
 
         <div className="flex flex-col gap-2 items-start sm:items-end">
-        <label className="text-[12px] text-[var(--color-muted)] flex items-center gap-2"><input type="checkbox" checked={includeSent} disabled={syncing} onChange={e=>setIncludeSent(e.target.checked)}/>Include Sent folders (slower)</label>
+        <label className="text-[12px] text-[var(--color-muted)] flex items-center gap-2"><input type="checkbox" checked={includeSent} disabled={syncing} onChange={e=>setIncludeSent(e.target.checked)}/>Include replies sent from Gmail/mobile</label>
         <PortfolioPillButton
           variant="secondary"
           size="md"
