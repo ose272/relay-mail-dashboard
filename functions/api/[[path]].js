@@ -3,7 +3,7 @@ import {createPreparation,continuePreparation,continueNextPreparation,preparatio
 import {cancelCampaign} from '../../src/campaign-control.mjs';
 import {rebalanceCampaign} from '../../src/rebalance.mjs';
 import {mergeConversation} from '../../src/conversations.mjs';
-import {sendFailureHealth} from '../../src/send-health.mjs';
+import {sendFailureHealth,smtpRetryMinutes} from '../../src/send-health.mjs';
 import {recordBounceReports} from '../../src/bounces.mjs';
 import { meteredD1, usageBudgets, allowBudgetRead } from '../_lib/usage-budget.js';
 import { selectReadyDelivery, claimReadyDeliverySql, seedSenderQueue } from '../../src/ready-senders.mjs';
@@ -1604,8 +1604,8 @@ async function handlePost(request, env, path) {
       const quotaRejected = responseCode >= 500 && responseCode < 600 &&
         /\b(?:quota|rate.?limit|too many|sending limit)\b/i.test(responseText);
       const transientRejection = (responseCode >= 400 && responseCode < 500) || quotaRejected;
-      if (transientRejection && attemptNumber <= 3) {
-        const delayMinutes = [5, 15, 60][attemptNumber - 1];
+      if (transientRejection && (quotaRejected || attemptNumber <= 3)) {
+        const delayMinutes = smtpRetryMinutes(error,attemptNumber);
         const retryAt = new Date(Date.now() + delayMinutes * 60 * 1000).toISOString();
         await db.batch([
           db.prepare(`

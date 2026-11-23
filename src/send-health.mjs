@@ -5,3 +5,5 @@ export function sendFailureHealth(error) {
  if(/quota|rate.?limit|too many|sending limit/i.test(text))return {status:'Warning',code:'SMTP_LIMIT',message:'Gmail temporarily limited sending. This sender is held until its retry time; other eligible accounts can continue.',pause:false};
  return null;
 }
+
+export function smtpRetryMinutes(error,attempt){const text=String(error.response || error.message || '');if(/daily.{0,60}(?:limit|quota)|(?:limit|quota).{0,60}daily/i.test(text))return 1440;return [5,15,60][Math.min(2,Math.max(0,attempt-1))];}
