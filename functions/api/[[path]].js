@@ -1872,6 +1872,7 @@ export async function onRequest(context) {
  let initial;
  try{initial=await readUsageDay(env.DB,day);}
  catch(error){
+   console.warn('Usage accounting lookup failed:',String(error?.message || 'Unknown D1 error').slice(0,300));
    if(/daily row read limit/i.test(String(error?.message||'')))return jsonResponse(503,{error:'Cloudflare D1 daily read quota is exhausted. It resets at 1:00 AM Africa/Lagos.',code:'D1_READ_LIMIT',resetAt});
    return jsonResponse(503,{error:'Database usage could not be checked. Retry shortly; sending remains safely held.',code:'APP_USAGE_UNAVAILABLE'});
  }
