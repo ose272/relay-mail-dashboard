@@ -1,3 +1,4 @@
+import { TrackingAnalytics } from '../components/TrackingAnalytics';
 import type { ConnectedAccount, InboxThread, Lead, NavPage, ScoutingPlan, SendingState } from '../types/maildash';
 import { MetricCard, SurfacePanel, PortfolioPillButton } from '../components/ui/DesignSystem';
 import { SendIcon, InboxIcon, UsersIcon, AccountIcon } from '../components/ui/BrandIcons';
@@ -48,6 +49,7 @@ export function DashboardPage({
         </PortfolioPillButton>
       </div>
 
+      <TrackingAnalytics campaignId={sendingState.id}/>
       <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-6">
         <MetricCard
           label="CONFIRMED SENT"
@@ -57,9 +59,9 @@ export function DashboardPage({
           onClick={() => onNavigate('sending')}
         />
         <MetricCard
-          label="TODAY’S REPLY THREADS"
+          label="REPLY THREADS · 24 HOURS"
           value={threads.length}
-          subtitle="Since midnight · Africa/Lagos"
+          subtitle="Rolling 24-hour window"
           icon={<InboxIcon size={20} />}
           onClick={() => onNavigate('inbox')}
         />

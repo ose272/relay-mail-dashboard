@@ -1,3 +1,4 @@
+import { TrackingAnalytics } from '../components/TrackingAnalytics';
 import React, { useMemo, useState } from 'react';
 import { ArrowUpDown, RotateCcw, CheckCircle2, Trash2 } from 'lucide-react';
 import {
@@ -137,6 +138,7 @@ export const SendingPage: React.FC<SendingPageProps> = ({
         />
       )}
 
+      <TrackingAnalytics campaignId={sendingState.id}/>
       {/* 4 KPI Metric Cards */}
       <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-6">
         <MetricCard

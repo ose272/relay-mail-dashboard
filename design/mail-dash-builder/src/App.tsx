@@ -53,7 +53,7 @@ export default function App() {
   setLeadBatches((data.leadImportBatches || []).map((b:any)=>({id:b.id,name:b.fileName,sourceLabel:`${b.importedCount} imported · ${b.duplicateCount} duplicates · ${b.invalidCount} invalid`,leadCount:Number(b.leadCount),planName:'Automatic allocation',importedAt:b.createdAt})));
   setPlans((data.templates || []).map(mapPlan)); setCampaignCount((data.campaigns || []).length);
   setSendingState(mapSending((data.campaigns || []).find((c:any)=>c.name==='Direct send' && c.status !== 'Cancelled')));
-  setSettings(prev=>({...prev,healthNotificationEmail:data.healthNotificationEmail || '',workspaceName:data.workspaceName || 'Relay Mail',dailyWorkspaceCap:Number(data.cap),openTracking:Boolean(data.openTracking),planOpenTracking:Boolean(data.planOpenTracking),includeSpamFolders:Boolean(data.includeSpamFolders)}));
+  setSettings(prev=>({...prev,healthNotificationEmail:data.healthNotificationEmail || '',workspaceName:data.workspaceName || 'Relay Mail',dailyWorkspaceCap:Number(data.cap),linkTracking:Boolean(data.linkTracking),openTracking:Boolean(data.openTracking),planOpenTracking:Boolean(data.planOpenTracking),includeSpamFolders:Boolean(data.includeSpamFolders)}));
   setActiveWorkspace(prev=>({...prev,name:data.workspaceName || 'Relay Mail'}));
   if(selectedThreadRef.current && data.threads?.some((t:any)=>t.id===selectedThreadRef.current)){
    const detail=await api('thread?id='+encodeURIComponent(selectedThreadRef.current));
@@ -157,7 +157,7 @@ export default function App() {
  };
  useEffect(()=>{if(!loaded || unauthorized || usageBlocked || activePage!=='accounts' || autoHealthStarted.current)return;if(!rawAccounts.current.some(a=>a.hasCredentials && !a.healthCheckedAt))return;autoHealthStarted.current=true;void checkAllHealth(true);},[loaded,unauthorized,usageBlocked,activePage]);
  const handleRunDnsCheck=(id:string)=>action(()=>api('account/health/check',{accountId:id,force:true,suppressNotification:true}));
- const saveSettings=(next:WorkspaceSettings)=>action(()=>api('settings',{cap:next.dailyWorkspaceCap,workspaceName:next.workspaceName,healthNotificationEmail:next.healthNotificationEmail || '',openTracking:Boolean(next.openTracking),planOpenTracking:Boolean(next.planOpenTracking),includeSpamFolders:Boolean(next.includeSpamFolders)}));
+ const saveSettings=(next:WorkspaceSettings)=>action(()=>api('settings',{cap:next.dailyWorkspaceCap,workspaceName:next.workspaceName,healthNotificationEmail:next.healthNotificationEmail || '',linkTracking:Boolean(next.linkTracking),openTracking:Boolean(next.openTracking),planOpenTracking:Boolean(next.planOpenTracking),includeSpamFolders:Boolean(next.includeSpamFolders)}));
  const nextLeadPage=()=>refresh(leadPage.nextCursor).catch(report);
  const syncLock=useRef(false);
  const syncMail=async(includeSent=true,retryOnly=false)=>{
@@ -165,11 +165,15 @@ export default function App() {
   const targets=rawAccounts.current.filter(a=>a.hasCredentials && ['Connected','IMAP only'].includes(a.connection) && (!retryOnly || failedSyncAccounts.current.has(a.id)));
   failedSyncAccounts.current=new Set();lastSyncIncludeSent.current=includeSent;setSyncHadErrors(false);
   let completed=0,bounces=0,more=0,alreadySyncing=0;setNotice(`Checking up to 50 accounts at once · 0/${targets.length} completed`);
-  try{const issues:string[]=[];
+  try{const issues:string[]=[];let sharedFailure=false,skipped=0;
+   const storageFailure=(e:unknown)=>e instanceof ApiError && ['APP_USAGE_UNAVAILABLE','APP_USAGE_BUDGET','D1_READ_LIMIT','APP_STORAGE_UNAVAILABLE'].includes(e.code);
+   const recordSharedFailure=(e:unknown)=>{if(!storageFailure(e))return false;if(!sharedFailure)issues.push('Dashboard database issue: '+(e as Error).message);sharedFailure=true;return true;};
    const unreadByAccount=new Map<string,InboxThread[]>();
    if(includeSent){const byEmail=new Map(targets.map(a=>[a.email,a.id]));for(const thread of threads)if(thread.unread){const id=byEmail.get(thread.accountEmail);if(id){const group=unreadByAccount.get(id)||[];group.push(thread);unreadByAccount.set(id,group);}}}
    await runSyncPool(targets,async a=>{
-    for(const thread of unreadByAccount.get(a.id)||[]){try{const result=await api('mail/conversation',{threadId:thread.id,manual:true,reconcileUnread:true});if(result.busy)throw new Error('Mailbox is already syncing; retry when it finishes.');if(result.thread){const mapped=mapThread(result.thread,rawAccounts.current);setThreads(prev=>prev.filter(t=>!(result.retiredThreadIds || []).includes(t.id)).map(t=>t.id===mapped.id?mapped:t));}}catch(e){issues.push('Unread conversation '+thread.contactEmail+': '+(e as Error).message);failedSyncAccounts.current.add(a.id);}}
+    if(sharedFailure){skipped++;failedSyncAccounts.current.add(a.id);return;}
+    for(const thread of unreadByAccount.get(a.id)||[]){try{const result=await api('mail/conversation',{threadId:thread.id,manual:true,reconcileUnread:true});if(result.busy)throw new Error('Mailbox is already syncing; retry when it finishes.');if(result.thread){const mapped=mapThread(result.thread,rawAccounts.current);setThreads(prev=>prev.filter(t=>!(result.retiredThreadIds || []).includes(t.id)).map(t=>t.id===mapped.id?mapped:t));}}catch(e){if(!recordSharedFailure(e))issues.push('Unread conversation '+thread.contactEmail+': '+(e as Error).message);failedSyncAccounts.current.add(a.id);if(sharedFailure)break;}}
+    if(sharedFailure){skipped++;failedSyncAccounts.current.add(a.id);return;}
     try{const result=await api('mail/sync',{accountId:a.id,manual:true,includeSent});
      bounces+=Number(result.bounces || 0);if(result.more)more++;if(result.busy){alreadySyncing++;failedSyncAccounts.current.add(a.id);issues.push(a.email+': another sync is still running. Retry when it finishes.');return;}
      const mailErrors=[...new Set([result.inboxError,result.sentError,result.bounceError].filter(Boolean).map((e:string)=>e.replace(/^.*?sync failed/,'Mailbox sync failed')))];if(mailErrors.length){issues.push(a.email+': '+mailErrors.join(' · '));failedSyncAccounts.current.add(a.id);}
@@ -178,13 +182,13 @@ export default function App() {
       setThreads(prev=>{const merged=new Map(prev.map(t=>[t.id,t]));for(const t of incoming){if(t.id!==selectedThreadRef.current)merged.set(t.id,t);}return [...merged.values()];});
       if(result.threads.some((t:any)=>t.id===selectedThreadRef.current)){const detail=await api('thread?id='+encodeURIComponent(selectedThreadRef.current));const preview=incoming.find((t:InboxThread)=>t.id===detail.thread.id);setThreads(prev=>prev.map(t=>t.id===detail.thread.id?{...mapThread(detail.thread,rawAccounts.current),inboundAt:preview?.inboundAt || t.inboundAt}:t));}
      }
-    }catch(e){issues.push(a.email+': '+(e as Error).message);failedSyncAccounts.current.add(a.id);}
+    }catch(e){if(!recordSharedFailure(e))issues.push(a.email+': '+(e as Error).message);failedSyncAccounts.current.add(a.id);}
     finally{completed++;setNotice(`Checking mail: ${completed}/${targets.length} accounts · ${bounces} bounces recorded · Up to 50 accounts at once`);}
    },50);
    try{await refresh();}catch(e){issues.push('Mailbox checks completed, but refreshing the dashboard failed: '+(e as Error).message);}
    try{await refreshSending();}catch(e){issues.push('Refreshing sending statistics failed: '+(e as Error).message);}
 
-   setNotice(`Manual sync finished: ${completed} accounts checked · ${bounces} new bounced deliveries recorded.${alreadySyncing?` ${alreadySyncing} already syncing in another session.`:''}${more?' More messages remain; click Sync again to continue.':''}`);
+   setNotice(`${sharedFailure?'Sync stopped because the dashboard database is unavailable. ':'Manual sync finished: '}${completed} accounts checked · ${bounces} new bounced deliveries recorded.${skipped?` ${skipped} accounts deferred; Retry checks them after recovery.`:''}${alreadySyncing?` ${alreadySyncing} already syncing in another session.`:''}${more?' More messages remain; click Sync again to continue.':''}`);
    if(issues.length){setError(issues.join('; '));setSyncHadErrors(true);}
   }catch(e){report(e);}finally{syncLock.current=false;}
  };
@@ -233,7 +237,7 @@ export default function App() {
         />
 
         <main aria-busy={busy} className="flex-1 px-5 sm:px-10 pt-8 pb-6 max-w-[1260px] w-full mx-auto">
-          {error && <div role="alert" className="mb-5 p-4 rounded-[14px] border border-red-400 text-[var(--color-danger)]">{error}<button type="button" aria-label="Dismiss error notification" className="ml-4 underline" onClick={()=>{setError('');setSyncHadErrors(false);}}>Dismiss</button><button className="ml-4 underline" onClick={() => {setError('');setUsageBlocked(false);if(syncHadErrors)void syncMail(lastSyncIncludeSent.current,true);else refresh().catch(report);}}>Retry</button>{unauthorized && <a className="ml-4 underline" href="/login">Sign in</a>}</div>}
+          {error && <div role="alert" className="mb-5 p-4 rounded-[14px] border border-red-400 text-[var(--color-danger)]">{syncHadErrors ? <><p>Some mailbox checks could not finish. This does not mean the accounts are restricted. Successful results have been kept.</p><details className="mt-2"><summary className="cursor-pointer underline">View sync error details</summary><p className="mt-2 break-words max-h-64 overflow-y-auto">{error}</p></details></> : error}<button type="button" aria-label="Dismiss error notification" className="ml-4 underline" onClick={()=>{setError('');setSyncHadErrors(false);}}>Dismiss</button><button className="ml-4 underline" onClick={() => {setError('');setUsageBlocked(false);if(syncHadErrors)void syncMail(lastSyncIncludeSent.current,true);else refresh().catch(report);}}>Retry</button>{unauthorized && <a className="ml-4 underline" href="/login">Sign in</a>}</div>}
           {accountAlerts.length>0 && <div role="alert" className="mb-5 p-4 rounded-[14px] border border-amber-400 bg-[var(--color-surface)] text-[13px]"><strong>Sender accounts need attention</strong>{accountAlerts.slice(0,3).map(a=><p key={a.id} className="mt-2 break-words">{a.accountEmail} · {a.status}: {a.message}</p>)}<button className="mt-3 underline" onClick={()=>{setActivePage('accounts');refresh().catch(report);}}>Review accounts</button></div>}
           {notice && <div role="status" className="mb-5 p-4 rounded-[14px] border border-[var(--color-border)] text-[13px]">{notice}{!busy && <button className="ml-3 underline" onClick={()=>setNotice('')}>Dismiss</button>}</div>}
           {!loaded && !error && <p role="status">Loading your workspace…</p>}

@@ -22,9 +22,9 @@ export function trackedHtml(text, url) {
 }
 
 export async function prepareOpenTracking(db, { deliveryId, campaignId, templateId }) {
-    await db.prepare(`INSERT INTO delivery_open_tracking(delivery_id, campaign_id, template_id) VALUES(?,?,?) ON CONFLICT(delivery_id) DO UPDATE SET first_open_at=NULL, eligible=0`).bind(deliveryId, campaignId, templateId).run();
+    await db.prepare(`INSERT OR IGNORE INTO delivery_open_tracking(delivery_id, campaign_id, template_id) VALUES(?,?,?)`).bind(deliveryId, campaignId, templateId).run();
 }
 
 export async function recordFirstOpen(db, deliveryId) {
-    return db.prepare("UPDATE delivery_open_tracking SET first_open_at=? WHERE delivery_id=? AND first_open_at IS NULL").bind(new Date().toISOString(), deliveryId).run();
+    return db.prepare("UPDATE delivery_open_tracking SET first_open_at=? WHERE delivery_id=? AND open_enabled=1 AND first_open_at IS NULL").bind(new Date().toISOString(), deliveryId).run();
 }

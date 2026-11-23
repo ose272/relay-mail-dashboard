@@ -113,7 +113,7 @@ export function SettingsPage({ settings, onSaveSettings, theme, onSetTheme }: Pr
                 <span>Plan open tracking</span>
               </span>
               <p className="text-[12px] text-[var(--color-muted)] mt-1 ml-6">
-                Track opens based on delivery plans.
+                Track opens for future sends, attributed to the scouting plan used. Privacy settings can affect reported opens.
               </p>
             </label>
 
@@ -133,6 +133,7 @@ export function SettingsPage({ settings, onSaveSettings, theme, onSetTheme }: Pr
             </label>
           </div>
 
+          <label className="block text-[13px]"><input type="checkbox" checked={Boolean(draft.linkTracking)} onChange={e=>setDraft({...draft,linkTracking:e.target.checked})}/> Track link clicks in future messages</label>
           <div className="flex gap-3">
             {(['light', 'dark'] as const).map(t => (
               <button
@@ -147,7 +148,7 @@ export function SettingsPage({ settings, onSaveSettings, theme, onSetTheme }: Pr
           </div>
 
           <p className="text-[12px] text-[var(--color-muted)]">
-            Tracking, automated warmup, signatures, follow-up sequences and configurable send delays are unavailable in this version.
+            Automated warmup, signatures, follow-up sequences and configurable send delays are unavailable in this version.
           </p>
         </form>
       </SurfacePanel>

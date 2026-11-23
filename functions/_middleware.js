@@ -13,7 +13,7 @@ function jsonResponse(status, error) {
 export async function onRequest({ request, env, next }) {
   const url = new URL(request.url);
   if (
-    publicPaths.has(url.pathname) ||
+    publicPaths.has(url.pathname) || url.pathname.startsWith('/track/open/') || url.pathname.startsWith('/track/click/') ||
     (!url.pathname.startsWith('/api/') && publicAssetPattern.test(url.pathname)) ||
     url.pathname === '/api/login'
   ) return next();

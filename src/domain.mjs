@@ -157,7 +157,7 @@ export function assessAccountHealth(check) {
   if (!failures.length) return { status: 'Healthy', code: '', message: 'IMAP and SMTP checks passed.' };
 
   const restricted = failures.some(failure =>
-    /blocked|restricted|suspended|account disabled|too many (?:connections|requests)|rate limit/i.test(failure.message || '')
+    /(?:account|sender|user|mailbox)\s+(?:(?:is|has been|was)\s+)?(?:disabled|suspended|restricted|blocked)|(?:disabled|suspended|restricted|blocked)\s+(?:account|sender|user|mailbox)/i.test(failure.message || '')
   );
   const status = restricted ? 'Restricted' : check.imap ? 'Warning' : 'Problem';
   return {

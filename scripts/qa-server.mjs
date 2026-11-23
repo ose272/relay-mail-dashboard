@@ -5,7 +5,7 @@ import { onRequest } from '../functions/api/[[path]].js';
 import { createTestDb } from './test-d1.mjs';
 const db=createTestDb();
 export const qaDb=db;
-const allowed=new Set(['POST sending/start','POST campaign/prepare','POST campaign/review','GET state','GET notifications','POST notifications/delete','POST notifications/delete-read','POST account/health/read','POST campaign/cancel','POST campaign/rebalance','GET thread','GET sending/status','POST import','POST import/progress','POST import/batch/delete','POST template','POST template/update','POST template/status','POST template/delete','POST account','POST account/cap','POST settings','POST thread/update']);
+const allowed=new Set(['POST sending/start','POST campaign/prepare','POST campaign/review','GET analytics','GET state','GET notifications','POST notifications/delete','POST notifications/delete-read','POST account/health/read','POST campaign/cancel','POST campaign/rebalance','GET thread','GET sending/status','POST import','POST import/progress','POST import/batch/delete','POST template','POST template/update','POST template/status','POST template/delete','POST account','POST account/cap','POST settings','POST thread/update']);
 export const server=http.createServer(async(req,res)=>{try{
  const url=new URL(req.url,'http://127.0.0.1:4175');
  if(url.pathname.startsWith('/api/')){

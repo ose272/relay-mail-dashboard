@@ -13,6 +13,7 @@ import { expireStaleDeliveriesSql } from '../../src/send-selection.mjs';
 import { allocateRepeatedCampaign, assignScoutingPlans, assessAccountHealth, parseLeads } from '../../src/domain.mjs';
 import { eligibleLeadsSql } from '../../src/sending-query.mjs';
 import { decryptCredential, encryptCredential } from '../_lib/credentials.js';
+import { instrumentCampaignMessage, loadEngagementAnalytics } from '../_lib/engagement.js';
 import { checkGmailHealth, fetchAccountMail, fetchGmailConversation, sendCampaignMessage, sendThreadReply, verifyGmailCredentials } from '../_lib/gmail.js';
 
 const emailPattern = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
@@ -246,11 +247,12 @@ async function loadState(db, options = {}) {
   const leadStatus = leadScope === 'archived' ? 'Archived' : 'Ready';
   const cursorSql = cursor ? 'AND (created_at, email, id) > (?, ?, ?)' : '';
   const leadBindings = cursor ? [leadStatus, ...cursor, leadPageSize + 1] : [leadStatus, leadPageSize + 1];
-  const [settingsResult, healthEmailResult, openTrackingResult, planOpenTrackingResult, includeSpamFoldersResult, accountsResult, leadsResult, leadCountsResult, templatesResult, campaignsResult, recentMessagesResult, healthEventsResult, importBatchesResult] = await Promise.all([
+  const [settingsResult, healthEmailResult, openTrackingResult, planOpenTrackingResult, linkTrackingResult, includeSpamFoldersResult, accountsResult, leadsResult, leadCountsResult, templatesResult, campaignsResult, recentMessagesResult, healthEventsResult, importBatchesResult] = await Promise.all([
     db.prepare('SELECT value FROM app_settings WHERE key = ?').bind('defaultCap').first(),
     db.prepare('SELECT value FROM app_settings WHERE key = ?').bind('healthNotificationEmail').first(),
     db.prepare('SELECT value FROM app_settings WHERE key = ?').bind('openTracking').first(),
     db.prepare('SELECT value FROM app_settings WHERE key = ?').bind('planOpenTracking').first(),
+    db.prepare('SELECT value FROM app_settings WHERE key = ?').bind('linkTracking').first(),
     db.prepare('SELECT value FROM app_settings WHERE key = ?').bind('includeSpamFolders').first(),
     db.prepare(`
       SELECT id, email, cap,
@@ -309,6 +311,7 @@ async function loadState(db, options = {}) {
     cap: Number(settingsResult?.value || 40),
     openTracking: openTrackingResult?.value === '1',
     planOpenTracking: planOpenTrackingResult?.value === '1',
+    linkTracking: linkTrackingResult?.value === '1',
     includeSpamFolders: includeSpamFoldersResult?.value === '1',
     accounts: resultRows(accountsResult).map(account => ({
       id: account.id,
@@ -947,6 +950,7 @@ async function handlePost(request, env, path) {
       ...(healthEmail !== undefined ? [db.prepare("INSERT INTO app_settings (key, value) VALUES ('healthNotificationEmail', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value").bind(healthEmail)] : []),
       ...(typeof body.workspaceName === 'string' ? [db.prepare("INSERT INTO app_settings (key, value) VALUES ('workspaceName', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value").bind(body.workspaceName.trim().slice(0, 100) || 'Relay Mail')] : []),
       ...(body.openTracking !== undefined ? [db.prepare("INSERT INTO app_settings (key, value) VALUES ('openTracking', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value").bind(body.openTracking ? '1' : '0')] : []),
+      ...(body.linkTracking !== undefined ? [db.prepare("INSERT INTO app_settings(key,value) VALUES('linkTracking',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value").bind(body.linkTracking?'1':'0')] : []),
       ...(body.planOpenTracking !== undefined ? [db.prepare("INSERT INTO app_settings (key, value) VALUES ('planOpenTracking', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value").bind(body.planOpenTracking ? '1' : '0')] : []),
       ...(body.includeSpamFolders !== undefined ? [db.prepare("INSERT INTO app_settings (key, value) VALUES ('includeSpamFolders', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value").bind(body.includeSpamFolders ? '1' : '0')] : []),
       db.prepare('INSERT INTO app_settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value').bind('defaultCap', String(cap)),
@@ -1459,7 +1463,10 @@ async function handlePost(request, env, path) {
     const campaignId = String(body.campaignId || '');
     const campaign = await db.prepare(`
       SELECT id, status, created_at, template_id, pending_count, sent_count,
-        uncertain_count, failed_count
+        uncertain_count, failed_count,
+        (SELECT value FROM app_settings WHERE key='openTracking') AS open_tracking,
+        (SELECT value FROM app_settings WHERE key='planOpenTracking') AS plan_open_tracking,
+        (SELECT value FROM app_settings WHERE key='linkTracking') AS link_tracking
       FROM campaigns WHERE id = ?
     `).bind(campaignId).first();
     if (!campaign) throw new HttpError(404, 'Campaign not found.');
@@ -1484,7 +1491,7 @@ async function handlePost(request, env, path) {
       SELECT d.id, d.batch_no, d.day_no, d.attempt_count, l.id AS lead_id, l.email AS recipient,
         l.name AS lead_name, l.store AS lead_store,
         a.id AS account_id, a.email AS sender, a.cap AS account_cap,
-        a.credential_ciphertext, t.subject, t.body
+        a.credential_ciphertext, t.id AS template_id, t.subject, t.body
       FROM campaign_deliveries d
       JOIN leads l ON l.id = d.lead_id JOIN accounts a ON a.id = d.account_id
       JOIN campaigns c ON c.id = d.campaign_id
@@ -1559,6 +1566,9 @@ async function handlePost(request, env, path) {
       throw new HttpError(409, 'Sender credentials could not be decrypted. Reconnect this account before sending.');
     }
 
+    const openEnabled=campaign.open_tracking==='1' || campaign.plan_open_tracking==='1';
+    const clickEnabled=campaign.link_tracking==='1';
+    if((openEnabled || clickEnabled) && !env.OPEN_TRACKING_SECRET)throw new HttpError(503,'Tracking setup is incomplete. Configure the signing secret before sending.');
     const claim = await db.prepare(claimReadyDeliverySql)
       .bind(nowIso, delivery.id, nowIso).run();
     if (!claim.meta?.changes) {
@@ -1576,13 +1586,22 @@ async function handlePost(request, env, path) {
       email: delivery.recipient
     }).trim();
     const messageId = `<${delivery.id}@relay-mail-dashboard.pages.dev>`;
+    let instrumented;
+    try {
+      instrumented=await instrumentCampaignMessage(db,{deliveryId:delivery.id,campaignId,templateId:delivery.template_id,text,origin:new URL(request.url).origin,secret:env.OPEN_TRACKING_SECRET,openEnabled,clickEnabled});
+    }catch{
+      // SMTP was not called: returning this claim to the queue cannot duplicate a send.
+      await db.prepare("UPDATE campaign_deliveries SET status=CASE WHEN EXISTS(SELECT 1 FROM campaigns WHERE id=campaign_deliveries.campaign_id AND status='Cancelled') THEN 'failed' ELSE 'queued' END,started_at=NULL,attempt_count=MAX(0,attempt_count-1),retry_after=?,last_error='Tracking setup failed before SMTP; safe to retry.' WHERE id=? AND status='sending'").bind(new Date(Date.now()+60000).toISOString(),delivery.id).run();
+      throw new HttpError(503,'Tracking could not be prepared. No email was sent; queued for retry.');
+    }
     try {
       await sendCampaignMessage({
         email: delivery.sender,
         password,
         to: delivery.recipient,
         subject,
-        text,
+        text:instrumented.text,
+        html:instrumented.html,
         messageId
       });
     } catch (error) {
@@ -1797,6 +1816,7 @@ async function handleRequest({ request, env }) {
   const url = new URL(request.url);
   const path = url.pathname;
   try {
+    if(request.method==='GET' && path==='/api/analytics')return jsonResponse(200,await loadEngagementAnalytics(env.DB,{campaignId:url.searchParams.get('campaignId'),all:url.searchParams.get('scope')==='all',configured:Boolean(env.OPEN_TRACKING_SECRET)}));
     if (request.method === 'GET' && path === '/api/state') return jsonResponse(200, await loadState(env.DB, {
       leadScope: url.searchParams.get('leadScope'),
       leadCursor: url.searchParams.get('leadCursor'),
@@ -1855,6 +1875,7 @@ async function handleRequest({ request, env }) {
         code: 'D1_READ_LIMIT'
       });
     }
+    if(/D1.*(?:overload|busy|timeout|timed out|internal|connection)|SQLITE_BUSY|database is locked/i.test(String(error?.message || '')))return jsonResponse(503,{error:'The dashboard database is temporarily unavailable. Retry shortly. This is not a Gmail account restriction.',code:'APP_STORAGE_UNAVAILABLE'});
     return jsonResponse(500, { error: 'The request could not be completed.' });
   }
 }

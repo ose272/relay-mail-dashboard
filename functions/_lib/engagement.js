@@ -1,0 +1,24 @@
+import {openTrackingUrl} from './open-tracking.js';
+const enc=new TextEncoder(),hex=buffer=>Array.from(new Uint8Array(buffer),b=>b.toString(16).padStart(2,'0')).join('');
+const escape=text=>String(text).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const key=secret=>crypto.subtle.importKey('raw',enc.encode(secret),{name:'HMAC',hash:'SHA-256'},false,['sign','verify']);
+export async function verifyClickToken(id,sig,secret){if(!secret||!/^[a-f0-9-]{36}$/i.test(id)||!/^[a-f0-9]{64}$/i.test(sig))return false;return crypto.subtle.verify('HMAC',await key(secret),Uint8Array.from(sig.match(/../g),s=>parseInt(s,16)),enc.encode('relay-click:'+id));}
+export function safeDestination(value){try{const u=new URL(value);return ['http:','https:'].includes(u.protocol)&&!u.username&&!u.password?u.href:null;}catch{return null;}}
+export async function instrumentCampaignMessage(db,{deliveryId,campaignId,templateId,text,origin,secret,openEnabled,clickEnabled}){
+ if(!openEnabled&&!clickEnabled)return {text};if(!secret)throw Error('Tracking signing secret is required.');
+ const links=new Map(),matches=[...text.matchAll(/https?:\/\/[^\s<>"']+/gi)];
+ for(const m of matches){const raw=m[0].replace(/[.,;:!?\])}]+$/g,''),destination=safeDestination(raw);if(!clickEnabled||!destination||links.has(raw))continue;const h=hex(await crypto.subtle.digest('SHA-256',enc.encode(deliveryId+'\n'+destination))),id=`${h.slice(0,8)}-${h.slice(8,12)}-${h.slice(12,16)}-${h.slice(16,20)}-${h.slice(20,32)}`,sig=hex(await crypto.subtle.sign('HMAC',await key(secret),enc.encode('relay-click:'+id)));links.set(raw,{id,destination,url:new URL(`/track/click/${id}.${sig}`,origin).href});}
+ const statements=[db.prepare('INSERT OR IGNORE INTO delivery_open_tracking(delivery_id,campaign_id,template_id,open_enabled,click_enabled) VALUES(?,?,?,?,?)').bind(deliveryId,campaignId,templateId,openEnabled?1:0,links.size?1:0)];
+ for(const l of links.values())statements.push(db.prepare('INSERT OR IGNORE INTO delivery_click_links(id,delivery_id,destination_url) VALUES(?,?,?)').bind(l.id,deliveryId,l.destination));
+ if(statements.length>100)throw Error('Too many links in one message.');await db.batch(statements);
+ let plain='',html='',offset=0;for(const m of matches){const raw=m[0].replace(/[.,;:!?\])}]+$/g,''),l=links.get(raw);plain+=text.slice(offset,m.index);html+=escape(text.slice(offset,m.index));if(l){plain+=l.url+m[0].slice(raw.length);html+=`<a href="${escape(l.url)}">${escape(raw)}</a>${escape(m[0].slice(raw.length))}`;}else{plain+=m[0];html+=escape(m[0]);}offset=m.index+m[0].length;}plain+=text.slice(offset);html+=escape(text.slice(offset));
+ const pixel=openEnabled?`<img src="${escape(await openTrackingUrl(origin,deliveryId,secret))}" width="1" height="1" alt="" style="border:0;width:1px;height:1px">`:'';
+ return {text:plain,html:`<div style="white-space:pre-wrap;font-family:Arial,sans-serif">${html}</div>${pixel}`};
+}
+const cols='tracked_sent_count,unique_open_count,click_tracked_sent_count,unique_click_count';
+export async function loadEngagementAnalytics(db,{campaignId,all=false,configured=false}={}){
+ const [settings,campaign]=await Promise.all([db.prepare("SELECT key,value FROM app_settings WHERE key IN('openTracking','planOpenTracking','linkTracking')").all(),all?db.prepare(`SELECT ${cols.split(',').map(c=>`COALESCE(SUM(${c}),0) AS ${c}`).join(',')} FROM campaigns`).first():campaignId?db.prepare(`SELECT id,name,${cols} FROM campaigns WHERE id=?`).bind(campaignId).first():db.prepare(`SELECT id,name,${cols} FROM campaigns WHERE name='Direct send' AND status<>'Cancelled' ORDER BY created_at DESC LIMIT 1`).first()]);
+ const plans=all?await db.prepare(`SELECT t.id,t.name,${cols.split(',').map(c=>`COALESCE(m.${c},0) AS ${c}`).join(',')} FROM templates t LEFT JOIN plan_open_metrics m ON m.template_id=t.id ORDER BY t.created_at,t.id`).all():campaign?.id?await db.prepare(`SELECT t.id,t.name,${cols.split(',').map(c=>'m.'+c).join(',')} FROM campaign_plan_open_metrics m JOIN templates t ON t.id=m.template_id WHERE m.campaign_id=? ORDER BY t.name,t.id`).bind(campaign.id).all():{results:[]};
+ const flags=Object.fromEntries((settings.results||[]).map(r=>[r.key,r.value==='1'])),metrics=r=>({openTracked:Number(r?.tracked_sent_count||0),opens:Number(r?.unique_open_count||0),clickTracked:Number(r?.click_tracked_sent_count||0),clicks:Number(r?.unique_click_count||0)});
+ return {configured,enabled:{opens:Boolean(flags.openTracking||flags.planOpenTracking),clicks:Boolean(flags.linkTracking)},campaignId:campaign?.id||null,...metrics(campaign),plans:(plans.results||[]).map(r=>({id:r.id,name:r.name,...metrics(r)}))};
+}
