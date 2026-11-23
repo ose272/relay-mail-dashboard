@@ -208,13 +208,7 @@ async function sendHealthNotification(db, env, eventId, retry = false) {
 const leadPageSize = 100;
 const inboxSummaryLimit = 250;
 
-function startOfLagosDayIso(now = new Date()) {
-  const parts = new Intl.DateTimeFormat('en-CA', {
-    timeZone: 'Africa/Lagos', year: 'numeric', month: '2-digit', day: '2-digit'
-  }).formatToParts(now);
-  const values = Object.fromEntries(parts.filter(part => part.type !== 'literal').map(part => [part.type, part.value]));
-  return new Date(`${values.year}-${values.month}-${values.day}T00:00:00+01:00`).toISOString();
-}
+function replyWindowStartIso(now = new Date()) { return new Date(now.getTime()-86400000).toISOString(); }
 
 function decodeLeadCursor(value) {
   try {
@@ -245,7 +239,7 @@ async function loadThread(db, id) {
 }
 
 async function loadState(db, options = {}) {
-  const todayStart = startOfLagosDayIso();
+  const todayStart = replyWindowStartIso();
   const leadScope = options.leadScope === 'archived' ? 'archived' : 'active';
   const cursor = decodeLeadCursor(options.leadCursor);
   const leadStatus = leadScope === 'archived' ? 'Archived' : 'Ready';
@@ -299,7 +293,7 @@ async function loadState(db, options = {}) {
   const recentMessages = resultRows(recentMessagesResult);
   const threadIds = [...new Set(recentMessages.map(message => message.thread_id))];
   // D1 accepts no more than 100 bound parameters per query. Batch lookups so
-  // every same-day reply is visible without risking a state-endpoint failure.
+  // every reply from the last 24 hours is visible without risking a state-endpoint failure.
   const threadGroups = await Promise.all(Array.from({ length: Math.ceil(threadIds.length / 100) }, (_, index) => {
     const ids = threadIds.slice(index * 100, (index + 1) * 100);
     return db.prepare(`SELECT id, name, store, email, subject, account_id, unread, status, starred, archived, tag FROM threads WHERE id IN (${ids.map(() => '?').join(', ')})`).bind(...ids).all();
@@ -1128,7 +1122,7 @@ async function handlePost(request, env, path) {
       const merged=await mergeConversation(db,thread,account,history.messages);
       const before=body.loadOlder===true?history.beforeUid:history.more?Math.max(Number(thread.provider_history_before_uid || 0),Number(history.beforeUid || 0)):thread.provider_history_before_uid;
       await db.prepare('UPDATE threads SET provider_thread_id=?,provider_uid_validity=?,provider_last_uid=?,provider_history_before_uid=? WHERE id=?').bind(history.providerThreadId,history.uidValidity,history.lastUid,before || null,thread.id).run();
-      return jsonResponse(200,{ok:true,thread:await loadThread(db,thread.id),imported:merged.imported,retiredThreadIds:await Promise.all(merged.movedThreadIds.map(async id=>(await db.prepare("SELECT 1 FROM messages WHERE thread_id=? AND direction='in' AND time>=? LIMIT 1").bind(id,startOfLagosDayIso()).first())?null:id)).then(ids=>ids.filter(Boolean))});
+      return jsonResponse(200,{ok:true,thread:await loadThread(db,thread.id),imported:merged.imported,retiredThreadIds:await Promise.all(merged.movedThreadIds.map(async id=>(await db.prepare("SELECT 1 FROM messages WHERE thread_id=? AND direction='in' AND time>=? LIMIT 1").bind(id,replyWindowStartIso()).first())?null:id)).then(ids=>ids.filter(Boolean))});
     }finally{await db.prepare('UPDATE accounts SET sync_lease_token=NULL,sync_lease_until=NULL WHERE id=? AND sync_lease_token=?').bind(account.id,leaseToken).run().catch(()=>{});}
   }
 
@@ -1346,7 +1340,7 @@ async function handlePost(request, env, path) {
     const changedThreads=[];
     for(const id of changedThreadIds){
       const thread=await db.prepare('SELECT id,name,store,email,subject,account_id,unread,status,starred,archived,tag FROM threads WHERE id=?').bind(id).first();
-      const latest=await db.prepare("SELECT direction,body,time,send_state FROM messages WHERE thread_id=? AND direction='in' AND time>=? ORDER BY time DESC LIMIT 1").bind(id,startOfLagosDayIso()).first();
+      const latest=await db.prepare("SELECT direction,body,time,send_state FROM messages WHERE thread_id=? AND direction='in' AND time>=? ORDER BY time DESC LIMIT 1").bind(id,replyWindowStartIso()).first();
       if(thread && latest)changedThreads.push({...thread,accountId:thread.account_id,inboundDay:new Intl.DateTimeFormat('en-CA',{timeZone:'Africa/Lagos',year:'numeric',month:'2-digit',day:'2-digit'}).format(new Date(latest.time)),messages:[{direction:latest.direction,body:latest.body,time:latest.time,sendState:latest.send_state}]});
     }
     return jsonResponse(200, {

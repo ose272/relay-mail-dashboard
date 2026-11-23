@@ -57,6 +57,7 @@ export interface InboxMessage {
 export interface InboxThread {
   historyBeforeUid?:number|null;
   inboundDay?: string;
+  inboundAt?: string;
   id: string;
   contactName: string;
   contactEmail: string;

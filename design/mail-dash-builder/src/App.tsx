@@ -2,7 +2,7 @@ import {NotificationsPage} from './pages/NotificationsPage';
 import {runSyncPool} from './lib/sync-pool';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { ConnectedAccount, InboxThread, Lead, LeadBatch, NavPage, ScoutingPlan, WorkspaceProfile, WorkspaceSettings, ThreadTag } from './types/maildash';
-import { api, ApiError, importWithProgress, type ImportProgress, csv, emptySending, lagosDay, mapAccount, mapLead, mapPlan, mapSending, mapThread } from './lib/api';
+import { api, ApiError, importWithProgress, type ImportProgress, csv, emptySending, mapAccount, mapLead, mapPlan, mapSending, mapThread } from './lib/api';
 import { Sidebar } from './components/layout/Sidebar';
 import { TopBar } from './components/layout/TopBar';
 import { DashboardPage } from './pages/DashboardPage';
@@ -57,7 +57,7 @@ export default function App() {
   setActiveWorkspace(prev=>({...prev,name:data.workspaceName || 'Relay Mail'}));
   if(selectedThreadRef.current && data.threads?.some((t:any)=>t.id===selectedThreadRef.current)){
    const detail=await api('thread?id='+encodeURIComponent(selectedThreadRef.current));
-   setThreads(prev=>prev.map(t=>t.id===detail.thread.id?{...mapThread(detail.thread,rawAccounts.current),inboundDay:t.inboundDay}:t));
+   setThreads(prev=>prev.map(t=>t.id===detail.thread.id?{...mapThread(detail.thread,rawAccounts.current)}:t));
   }
   setLoaded(true); setUnauthorized(false);
  },[]);
@@ -81,7 +81,7 @@ export default function App() {
   const timer=setInterval(()=>void poll(),sendingState.backendStatus==='Scheduled'?15000:2000);
   return()=>{stopped=true;clearInterval(timer);};
  },[loaded,unauthorized,usageBlocked,activePage,sendingState.status,sendingState.backendStatus,refreshSending,report]);
- useEffect(()=>{const timer=setInterval(()=>setThreads(prev=>prev.filter(t=>t.inboundDay===lagosDay(new Date().toISOString()))),60000);return()=>clearInterval(timer);},[]);
+ useEffect(()=>{const timer=setInterval(()=>setThreads(prev=>prev.filter(t=>Date.parse(t.inboundAt || '')>=Date.now()-86400000)),60000);return()=>clearInterval(timer);},[]);
 
  useEffect(()=>{
   if(!loaded || usageBlocked || unauthorized || sendingState.backendStatus!=='Preparing' || !sendingState.id)return;
@@ -115,13 +115,13 @@ export default function App() {
   selectedThreadRef.current=id;setSelectedThreadId(id);
   try{
    const local=await api('thread?id='+encodeURIComponent(id));
-   setThreads(prev=>prev.map(t=>t.id===id?{...mapThread(local.thread,rawAccounts.current),inboundDay:t.inboundDay}:t));
+   setThreads(prev=>prev.map(t=>t.id===id?{...mapThread(local.thread,rawAccounts.current)}:t));
    const account=rawAccounts.current.find(a=>a.id===local.thread.accountId);
    if(!account?.hasCredentials)return;
    setConversationLoadingId(id);
    const result=await api('mail/conversation',{threadId:id,manual:true,loadOlder});
    if(result.busy){setNotice('This account is already syncing. Refresh the conversation when it finishes.');return;}
-   if(result.thread)setThreads(prev=>prev.filter(t=>!(result.retiredThreadIds || []).includes(t.id)).map(t=>t.id===id?{...mapThread(result.thread,rawAccounts.current),inboundDay:t.inboundDay}:t));
+   if(result.thread)setThreads(prev=>prev.filter(t=>!(result.retiredThreadIds || []).includes(t.id)).map(t=>t.id===id?{...mapThread(result.thread,rawAccounts.current)}:t));
   }catch(e){report(e);}finally{setConversationLoadingId(current=>current===id?'':current);}
  };
  const handleSendReply=(id:string,text:string)=>action(async()=>{const key=id+'\n'+text;let requestId=replyRequests.current.get(key);if(!requestId){requestId=crypto.randomUUID();replyRequests.current.set(key,requestId);}await api('reply',{id,text,requestId});replyRequests.current.delete(key);});
@@ -170,7 +170,7 @@ export default function App() {
      if(result.threads?.length){
       const incoming=result.threads.map((t:any)=>mapThread(t,rawAccounts.current));
       setThreads(prev=>{const merged=new Map(prev.map(t=>[t.id,t]));for(const t of incoming){if(t.id!==selectedThreadRef.current)merged.set(t.id,t);}return [...merged.values()];});
-      if(result.threads.some((t:any)=>t.id===selectedThreadRef.current)){const detail=await api('thread?id='+encodeURIComponent(selectedThreadRef.current));const preview=incoming.find((t:InboxThread)=>t.id===detail.thread.id);setThreads(prev=>prev.map(t=>t.id===detail.thread.id?{...mapThread(detail.thread,rawAccounts.current),inboundDay:preview?.inboundDay || t.inboundDay}:t));}
+      if(result.threads.some((t:any)=>t.id===selectedThreadRef.current)){const detail=await api('thread?id='+encodeURIComponent(selectedThreadRef.current));const preview=incoming.find((t:InboxThread)=>t.id===detail.thread.id);setThreads(prev=>prev.map(t=>t.id===detail.thread.id?{...mapThread(detail.thread,rawAccounts.current),inboundAt:preview?.inboundAt || t.inboundAt}:t));}
      }
     }catch(e){issues.push(a.email+': '+(e as Error).message);failedSyncAccounts.current.add(a.id);}
     finally{completed++;setNotice(`Checking mail: ${completed}/${targets.length} accounts · ${bounces} bounces recorded · Up to 100 accounts at once`);}
