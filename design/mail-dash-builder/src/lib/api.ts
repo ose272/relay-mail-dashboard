@@ -2,7 +2,12 @@ import {messageTextOnly} from './message-text';
 import type { ConnectedAccount, InboxThread, Lead, ScoutingPlan, SendingState } from '../types/maildash';
 export class ApiError extends Error { constructor(message: string, public status: number, public code = '') { super(message); } }
 export async function api(path: string, body?: unknown): Promise<any> {
-  const response = await fetch(`/api/${path}`, { credentials: 'same-origin', cache: 'no-store', ...(body === undefined ? {} : { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }) });
+  const fetchOnce=()=>fetch(`/api/${path}`, { credentials: 'same-origin', cache: 'no-store', ...(body === undefined ? {} : { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }) });
+  let response:Response;
+  try{response=await fetchOnce();}catch{
+   if(body===undefined){try{await new Promise(resolve=>setTimeout(resolve,500));response=await fetchOnce();}catch{throw new ApiError('Connection interrupted while refreshing. Successfully synced messages are saved; retry when connected.',0,'NETWORK_ERROR');}}
+   else throw new ApiError('Connection interrupted. This request may still be running; wait briefly before retrying sync.',0,'NETWORK_ERROR');
+  }
   const data = await response.json().catch(() => { throw new ApiError('The server returned an invalid response. Please reload.', response.status); });
   if (!response.ok) throw new ApiError(data.error || 'Request failed', response.status, data.code);
   return data;
