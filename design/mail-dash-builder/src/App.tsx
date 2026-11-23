@@ -42,7 +42,7 @@ export default function App() {
  const [loaded,setLoaded]=useState(false), [error,setError]=useState(''), [unauthorized,setUnauthorized]=useState(false), [busy,setBusy]=useState(false);
  const selectedThreadRef=useRef('');
  const rawAccounts=useRef<any[]>([]), mutationLock=useRef(false), replyRequests=useRef(new Map<string,string>());
- const report=useCallback((e:unknown)=>{setSyncHadErrors(false);setError(e instanceof Error ? e.message : 'Request failed'); if(e instanceof ApiError && e.status===401) setUnauthorized(true);if(e instanceof ApiError && ['D1_READ_LIMIT','APP_USAGE_BUDGET','APP_USAGE_UNAVAILABLE'].includes(e.code))setUsageBlocked(true);},[]);
+ const report=useCallback((e:unknown)=>{setSyncHadErrors(false);setError(e instanceof Error ? e.message : 'Request failed'); if(e instanceof ApiError && e.status===401) setUnauthorized(true);if(e instanceof ApiError && ['D1_READ_LIMIT','APP_USAGE_BUDGET'].includes(e.code))setUsageBlocked(true);},[]);
  const refresh=useCallback(async(cursor='')=>{
   const data=await api('state?leadScope=active&leadCursor='+encodeURIComponent(cursor));
   rawAccounts.current=data.accounts || [];

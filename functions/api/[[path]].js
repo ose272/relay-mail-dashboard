@@ -6,7 +6,7 @@ import {rebalanceCampaign} from '../../src/rebalance.mjs';
 import {mergeConversation} from '../../src/conversations.mjs';
 import {sendFailureHealth,smtpRetryMinutes} from '../../src/send-health.mjs';
 import {recordBounceReports} from '../../src/bounces.mjs';
-import { meteredD1, usageBudgets, allowBudgetRead } from '../_lib/usage-budget.js';
+import { meteredD1, allowBudgetRead, requestUsageBudgets, readUsageDay } from '../_lib/usage-budget.js';
 import { selectReadyDelivery, claimReadyDeliverySql, seedSenderQueue } from '../../src/ready-senders.mjs';
 import { SEND_CONCURRENCY } from '../../src/send-limits.mjs';
 import { expireStaleDeliveriesSql } from '../../src/send-selection.mjs';
@@ -1191,7 +1191,7 @@ async function handlePost(request, env, path) {
     const changedThreadIds = new Set();
     for (const message of relevantMessages) {
       const externalId = `${account.id}:${message.externalId}`;
-      const duplicate = message.messageId?await db.prepare('SELECT m.id FROM messages m JOIN threads t ON t.id=m.thread_id WHERE t.account_id=? AND m.message_id=? LIMIT 1').bind(account.id,message.messageId).first():await db.prepare('SELECT id FROM messages WHERE external_id=?').bind(externalId).first();
+      const duplicate = message.messageId?await db.prepare('SELECT m.id FROM messages m JOIN threads t ON t.id=m.thread_id WHERE t.account_id=? AND m.message_id=? LIMIT 1').bind(account.id,message.messageId).first():await db.prepare("SELECT id FROM messages WHERE external_id<>'' AND external_id=?").bind(externalId).first();
       if (duplicate) continue;
 
       const references = [...new Set([message.inReplyTo, ...message.references].filter(Boolean))].slice(-20);
@@ -1253,7 +1253,7 @@ async function handlePost(request, env, path) {
     for (const message of sent?.messages || []) {
       const externalId = `${account.id}:${message.externalId}`;
       await reconcileUncertainCampaignDelivery(db, message);
-      const existingSent=await db.prepare('SELECT id,thread_id FROM messages WHERE external_id = ?').bind(externalId).first();
+      const existingSent=await db.prepare("SELECT id,thread_id FROM messages WHERE external_id<>'' AND external_id=?").bind(externalId).first();
       if(existingSent){await applySentState(db,existingSent.thread_id,message.date);changedThreadIds.add(existingSent.thread_id);continue;}
       const existingMessage=message.messageId ? await db.prepare(`
         SELECT m.id,m.thread_id FROM messages m JOIN threads t ON t.id = m.thread_id
@@ -1870,12 +1870,12 @@ export async function onRequest(context) {
  const day=new Date().toISOString().slice(0,10);
  const resetAt=new Date(Date.parse(day+'T00:00:00Z')+86400000).toISOString();
  let initial;
- try{initial=await env.DB.prepare('SELECT rows_read,rows_written FROM app_usage_days WHERE day=?').bind(day).first() || {rows_read:0,rows_written:0};}
+ try{initial=await readUsageDay(env.DB,day);}
  catch(error){
    if(/daily row read limit/i.test(String(error?.message||'')))return jsonResponse(503,{error:'Cloudflare D1 daily read quota is exhausted. It resets at 1:00 AM Africa/Lagos.',code:'D1_READ_LIMIT',resetAt});
-   return jsonResponse(503,{error:'Database usage accounting is unavailable. Sending is held.',code:'APP_USAGE_UNAVAILABLE'});
+   return jsonResponse(503,{error:'Database usage could not be checked. Retry shortly; sending remains safely held.',code:'APP_USAGE_UNAVAILABLE'});
  }
- const budgets=usageBudgets(env);
+ const budgets=requestUsageBudgets(env,request.method,url.pathname);
  if((initial.rows_read>=budgets.reads || initial.rows_written>=budgets.writes) && !allowBudgetRead(env,request.method,url.pathname)){
    if(url.pathname==='/api/internal/send-tick'){
      await env.DB.prepare(`UPDATE campaigns SET status='Scheduled',next_send_at=? WHERE name='Direct send'

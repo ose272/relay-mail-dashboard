@@ -119,7 +119,7 @@ export const InboxPage: React.FC<InboxPageProps> = ({
             Unified inbox
           </h1>
           <p className="text-[14px] text-[var(--color-muted)] mt-1">
-            Check replies and bounces manually across up to 100 accounts at once. New replies appear as each account finishes.
+            Check replies and bounces across your connected accounts. New replies appear as each account finishes.
           </p>
         </div>
 
