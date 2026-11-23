@@ -1109,7 +1109,7 @@ async function handlePost(request, env, path) {
   if(path==='/api/mail/conversation'){
     if(body.manual!==true)throw new HttpError(400,'Open or refresh a conversation to sync its Gmail history.');
     if(typeof body.threadId!=='string')throw new HttpError(400,'Choose a conversation.');
-    const thread=await db.prepare('SELECT id,account_id,provider_thread_id,provider_uid_validity,provider_last_uid,provider_history_before_uid FROM threads WHERE id=?').bind(body.threadId).first();
+    const thread=await db.prepare('SELECT id,account_id,unread,provider_thread_id,provider_uid_validity,provider_last_uid,provider_history_before_uid FROM threads WHERE id=?').bind(body.threadId).first();
     if(!thread)throw new HttpError(404,'Conversation not found.');
     const account=await db.prepare('SELECT id,email,connection,credential_ciphertext FROM accounts WHERE id=?').bind(thread.account_id).first();
     if(!account?.credential_ciphertext || !['Connected','IMAP only'].includes(account.connection))throw new HttpError(409,'Reconnect the sending account to sync this conversation.');
@@ -1120,7 +1120,7 @@ async function handlePost(request, env, path) {
       const original=await db.prepare("SELECT message_id FROM messages WHERE thread_id=? AND message_id<>'' ORDER BY time DESC LIMIT 1").bind(thread.id).first();
       const password=await decryptCredential(account.email,account.credential_ciphertext,env.CREDENTIALS_ENCRYPTION_KEY);
       let history;
-      try{history=await fetchGmailConversation(account.email,password,{providerThreadId:thread.provider_thread_id,messageId:original?.message_id,beforeUid:body.loadOlder===true?Number(thread.provider_history_before_uid || 0):0,afterUid:Number(thread.provider_last_uid || 0),uidValidity:thread.provider_uid_validity});}
+      try{history=await fetchGmailConversation(account.email,password,{providerThreadId:thread.provider_thread_id,messageId:original?.message_id,beforeUid:body.loadOlder===true?Number(thread.provider_history_before_uid || 0):0,afterUid:body.reconcileUnread===true && thread.unread?0:Number(thread.provider_last_uid || 0),uidValidity:thread.provider_uid_validity});}
       catch(error){throw new HttpError(502,mailSyncError('Conversation history',error),'MAIL_SYNC_FAILED');}
       for(const message of history.messages){if(message.fromAddress.toLowerCase()===account.email.toLowerCase())await reconcileUncertainCampaignDelivery(db,message);}
       const merged=await mergeConversation(db,thread,account,history.messages);

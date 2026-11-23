@@ -178,6 +178,15 @@ export default function App() {
     }catch(e){issues.push(a.email+': '+(e as Error).message);failedSyncAccounts.current.add(a.id);}
     finally{completed++;setNotice(`Checking mail: ${completed}/${targets.length} accounts · ${bounces} bounces recorded · Up to 100 accounts at once`);}
    });
+   if(includeSent){
+    const state=await api('state?leadScope=active');
+    const targetIds=new Set(targets.map(a=>a.id));
+    const grouped=new Map<string,any[]>();
+    for(const thread of state.threads || [])if(thread.unread && targetIds.has(thread.accountId)){const group=grouped.get(thread.accountId)||[];group.push(thread);grouped.set(thread.accountId,group);}
+    let verified=0;const total=[...grouped.values()].reduce((sum,group)=>sum+group.length,0);
+    await runSyncPool([...grouped.values()],async group=>{for(const thread of group){try{const result=await api('mail/conversation',{threadId:thread.id,manual:true,reconcileUnread:true});if(result.busy)throw new Error('Mailbox is busy; conversation status could not be verified.');}catch(e){issues.push('Conversation '+thread.id+': '+(e as Error).message);failedSyncAccounts.current.add(thread.accountId);}finally{verified++;setNotice(`Verifying unread conversations in Gmail: ${verified}/${total}`);}}},6);
+    await refresh();
+   }
    await refreshSending();
    if(selectedThreadRef.current)await handleSelectThread(selectedThreadRef.current);
    setNotice(`Manual sync finished: ${completed} accounts checked · ${bounces} new bounced deliveries recorded.${alreadySyncing?` ${alreadySyncing} already syncing in another session.`:''}${more?' More messages remain; click Sync again to continue.':''}`);
