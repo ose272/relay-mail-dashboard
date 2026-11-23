@@ -19,15 +19,15 @@ test('send selection uses sender seeks and preserves quotas, retries, day gates 
  }finally{s.close();}
 });
 
-test('atomic claims prevent duplicates, same-sender overlap and more than 150 in-flight messages',async()=>{
+test('atomic claims prevent duplicates, same-sender overlap and more than 200 in-flight messages',async()=>{
  const {claimDeliverySql}=await import('./send-selection.mjs');const db=createTestDb(),s=db.sqlite;
  try{
  s.exec("INSERT INTO templates(id,name,subject,body,created_at) VALUES('p','Plan','','Body','2026-01-01');INSERT INTO campaigns(id,name,template_id,status,created_at,allocation_json) VALUES('c','Direct send','p','Sending','2026-01-01','[]');");
- for(let i=0;i<151;i++){s.prepare("INSERT INTO accounts(id,email,cap,created_at,connection,credential_ciphertext,smtp_verified_at) VALUES(?,?,40,'2026-01-01','Connected','local-only','2026-01-01')").run('a'+i,`a${i}@invalid.test`);for(let j=0;j<2;j++){const id=`a${i}d${j}`;s.prepare("INSERT INTO leads(id,email,created_at) VALUES(?,?,'2026-01-01')").run(id,id+'@invalid.test');s.prepare("INSERT INTO campaign_deliveries(id,campaign_id,account_id,lead_id,batch_no,day_no,created_at) VALUES(?,'c',?,?,1,1,'2026-01-01')").run(id,'a'+i,id);}}
+ for(let i=0;i<201;i++){s.prepare("INSERT INTO accounts(id,email,cap,created_at,connection,credential_ciphertext,smtp_verified_at) VALUES(?,?,40,'2026-01-01','Connected','local-only','2026-01-01')").run('a'+i,`a${i}@invalid.test`);for(let j=0;j<2;j++){const id=`a${i}d${j}`;s.prepare("INSERT INTO leads(id,email,created_at) VALUES(?,?,'2026-01-01')").run(id,id+'@invalid.test');s.prepare("INSERT INTO campaign_deliveries(id,campaign_id,account_id,lead_id,batch_no,day_no,created_at) VALUES(?,'c',?,?,1,1,'2026-01-01')").run(id,'a'+i,id);}}
  const claim=(id,a,cap=40)=>s.prepare(claimDeliverySql).run('2026-11-19T09:00:00.000Z',id,a,'2026-11-18T09:00:00.000Z',cap,40).changes;
  assert.equal(claim('a0d0','a0'),1);assert.equal(claim('a0d0','a0'),0);assert.equal(claim('a0d1','a0'),0);
- for(let i=1;i<150;i++)assert.equal(claim(`a${i}d0`,'a'+i),1);assert.equal(claim('a150d0','a150'),0);
- s.exec("UPDATE campaign_deliveries SET status='sent',sent_at='2026-11-19T09:00:00.000Z' WHERE id='a0d0'");assert.equal(claim('a0d1','a0',1),0);assert.equal(claim('a150d0','a150'),1);
+ for(let i=1;i<200;i++)assert.equal(claim(`a${i}d0`,'a'+i),1);assert.equal(claim('a200d0','a200'),0);
+ s.exec("UPDATE campaign_deliveries SET status='sent',sent_at='2026-11-19T09:00:00.000Z' WHERE id='a0d0'");assert.equal(claim('a0d1','a0',1),0);assert.equal(claim('a200d0','a200'),1);
  s.exec("UPDATE campaign_deliveries SET status='sent',sent_at='2026-11-19T09:00:00.000Z' WHERE id='a1d0'; UPDATE campaigns SET status='Needs review' WHERE id='c'");assert.equal(claim('a1d1','a1'),0);s.exec("UPDATE campaigns SET status='User paused' WHERE id='c'");assert.equal(claim('a1d1','a1'),0);
  }finally{s.close();}
 });

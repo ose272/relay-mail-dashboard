@@ -12,7 +12,7 @@ export default {
       const progress=await response.json();
       if(!response.ok || progress.preparing || progress.dispatchReady!==true)return;
     }catch{console.error('Preparation status was not confirmed; skipping dispatch.');return;}
-    let remaining = sendsPerInvocation, attempts = 0, stopped = false;
+    let remaining = sendsPerInvocation, attempts = 0, stopped = false, networkWarned=false;
     const worker = async (senderSlot) => {
       while (!stopped && remaining > 0 && attempts < maximumAttempts) {
         remaining--; attempts++;
@@ -32,11 +32,11 @@ export default {
             await new Promise(resolve => setTimeout(resolve, 100));
             continue;
           }
-          if (result.sent !== true && result.failed !== true && result.deferred !== true) { stopped = true; return; }
+          if (result.sent !== true && result.failed !== true && result.deferred !== true && result.reviewPending !== true) { stopped = true; return; }
         } catch {
           // Never retry a request with unknown delivery confirmation.
-          if(!stopped)console.error('Background send tick did not return confirmation; stopping this invocation.');
-          stopped = true; return;
+          if(!networkWarned)console.error('Background send tick did not return confirmation; stopping this lane without retrying its message.');
+          networkWarned=true; return;
         }
       }
     };

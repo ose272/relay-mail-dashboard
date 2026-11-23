@@ -127,10 +127,10 @@ export const SendingPage: React.FC<SendingPageProps> = ({
         <NoticeBanner
           title={
             sendingState.status === 'paused'
-              ? 'Sending is paused for review'
+              ? 'Sending is paused'
               : `${flaggedRecords.length} message${flaggedRecords.length === 1 ? '' : 's'} flagged for delivery review`
           }
-          subtitle="Check rejected and unconfirmed messages before resuming the queued work."
+          subtitle="Unconfirmed messages stay in review without automatic retries. Other eligible queued messages can continue sending."
           actionLabel="Review messages"
           onAction={() => setReviewModalOpen(true)}
           tone="brand"

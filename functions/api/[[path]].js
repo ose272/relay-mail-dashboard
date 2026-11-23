@@ -533,12 +533,12 @@ async function handlePost(request, env, path) {
       SELECT c.id FROM campaigns c
       WHERE c.name = 'Direct send' AND c.status IN ('Sending', 'Scheduled')
         AND (c.next_send_at IS NULL OR c.next_send_at <= ?)
-        AND EXISTS (
+        AND (EXISTS (
           SELECT 1 FROM campaign_deliveries d
           WHERE d.campaign_id = c.id AND d.status = 'queued'
-        )
+        ) OR EXISTS(SELECT 1 FROM campaign_deliveries stale WHERE stale.campaign_id=c.id AND stale.status='sending' AND stale.started_at<=?))
       ORDER BY c.created_at LIMIT 1
-    `).bind(new Date().toISOString()).first();
+    `).bind(new Date().toISOString(),new Date(Date.now()-120000).toISOString()).first();
     if (!activeRun) return jsonResponse(200, { ok: true, done: true });
     body.campaignId = activeRun.id;
     path = '/api/campaign/send';
@@ -1477,14 +1477,7 @@ async function handlePost(request, env, path) {
     const currentDay = Math.floor((now.getTime() - Date.parse(campaign.created_at)) / (24 * 60 * 60 * 1000)) + 1;
     const stale = await db.prepare(expireStaleDeliveriesSql)
       .bind(campaignId, new Date(now.getTime() - 2 * 60 * 1000).toISOString()).run();
-    if (stale.meta?.changes) {
-      await db.prepare("UPDATE campaigns SET status = 'Needs review' WHERE id = ?").bind(campaignId).run();
-      return jsonResponse(200, {
-        ok: true,
-        needsReview: true,
-        reason: 'A prior send did not finish recording. Check the sender’s Sent folder before continuing.'
-      });
-    }
+    if(stale.meta?.changes){const remaining=await db.prepare("SELECT 1 FROM campaign_deliveries WHERE campaign_id=? AND status='queued' LIMIT 1").bind(campaignId).first();if(!remaining)return jsonResponse(200,{ok:true,done:true,needsReview:true});}
 
     const candidate = await selectReadyDelivery(db,{campaignId,nowIso,candidateOffset:Number.isInteger(body.senderSlot) && body.senderSlot>=0 && body.senderSlot<SEND_CONCURRENCY ? body.senderSlot : 0});
     const delivery = candidate.id ? await db.prepare(`
@@ -1649,9 +1642,9 @@ async function handlePost(request, env, path) {
       }
       await db.batch([
         db.prepare("UPDATE campaign_deliveries SET status = 'uncertain', last_error = ? WHERE id = ?").bind(diagnostic, delivery.id),
-        db.prepare("UPDATE campaigns SET status = 'Needs review' WHERE id = ?").bind(campaignId)
+        db.prepare(finishAttemptSql).bind(nowIso,campaignId)
       ]);
-      throw new HttpError(502, 'Gmail did not confirm delivery. Check the sender’s Sent folder before retrying.');
+      return jsonResponse(200,{ok:true,reviewPending:true,reason:'This message needs review and will not be retried automatically. Other queued messages can continue.'});
     }
 
     const sentAt = new Date().toISOString();
