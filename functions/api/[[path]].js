@@ -901,6 +901,9 @@ async function handlePost(request, env, path) {
       ok: true,
       checked: true,
       healthStatus: result.status,
+      healthCheckedAt: new Date().toISOString(),
+      healthCode: result.code,
+      healthMessage: result.message,
       eventId,
       emailStatus: notification?.status || null
     });

@@ -147,12 +147,15 @@ export default function App() {
  const handleConnectAccount=(p:any)=>action(async()=>{const result=await api('account/connect',{email:p.email,appPassword:p.appPassword});await api('account/cap',{id:result.id,cap:p.dailyLimit});});
  const healthCheckLock=useRef(false);
  const [healthChecking,setHealthChecking]=useState(false),[healthProgress,setHealthProgress]=useState('');
- const checkAllHealth=async()=>{
+ const autoHealthStarted=useRef(false);
+ const checkAllHealth=async(uncheckedOnly=false)=>{
   if(healthCheckLock.current)return;healthCheckLock.current=true;setHealthChecking(true);
-  const targets=rawAccounts.current.filter(a=>a.hasCredentials);let completed=0,failed=0;
-  setHealthProgress(`Checking account health: 0/${targets.length}`);
-  try{await runSyncPool(targets,async a=>{try{await api('account/health/check',{accountId:a.id,force:true,suppressNotification:true});}catch{failed++;}finally{completed++;setHealthProgress(`Checking account health: ${completed}/${targets.length} · ${failed} checks failed`);}},25);await refresh();setHealthProgress(`Health check finished: ${completed}/${targets.length} accounts checked · ${failed} requests failed.`);}catch(e){report(e);}finally{healthCheckLock.current=false;setHealthChecking(false);}
+  const targets=rawAccounts.current.filter(a=>a.hasCredentials && (!uncheckedOnly || !a.healthCheckedAt));let completed=0,saved=0,failed=0;let firstError='';
+  const progress=()=>setHealthProgress(`Health checks: ${saved} results saved · ${completed}/${targets.length} processed · ${failed} requests failed${firstError?' · '+firstError:''}`);
+  progress();
+  try{await runSyncPool(targets,async a=>{try{const result=await api('account/health/check',{accountId:a.id,force:true,suppressNotification:true});if(!result.checked)throw new Error(result.reason || 'Health check was not saved.');saved++;const patch={healthStatus:result.healthStatus,healthCheckedAt:result.healthCheckedAt,healthMessage:result.healthMessage,healthCode:result.healthCode};rawAccounts.current=rawAccounts.current.map(account=>account.id===a.id?{...account,...patch}:account);setAccounts(previous=>previous.map(account=>account.id===a.id?{...account,healthStatus:result.healthStatus,healthMessage:result.healthMessage || ''}:account));}catch(e){failed++;if(!firstError)firstError=(e as Error).message;}finally{completed++;progress();}},25);await refresh();progress();}catch(e){report(e);}finally{healthCheckLock.current=false;setHealthChecking(false);}
  };
+ useEffect(()=>{if(!loaded || unauthorized || usageBlocked || activePage!=='accounts' || autoHealthStarted.current)return;if(!rawAccounts.current.some(a=>a.hasCredentials && !a.healthCheckedAt))return;autoHealthStarted.current=true;void checkAllHealth(true);},[loaded,unauthorized,usageBlocked,activePage]);
  const handleRunDnsCheck=(id:string)=>action(()=>api('account/health/check',{accountId:id,force:true,suppressNotification:true}));
  const saveSettings=(next:WorkspaceSettings)=>action(()=>api('settings',{cap:next.dailyWorkspaceCap,workspaceName:next.workspaceName,healthNotificationEmail:next.healthNotificationEmail || '',openTracking:Boolean(next.openTracking),planOpenTracking:Boolean(next.planOpenTracking),includeSpamFolders:Boolean(next.includeSpamFolders)}));
  const nextLeadPage=()=>refresh(leadPage.nextCursor).catch(report);
@@ -303,7 +306,7 @@ export default function App() {
               onUpdateDailyLimit={handleUpdateDailyLimit}
               onConnectAccount={handleConnectAccount}
               onRunDnsCheck={handleRunDnsCheck}
-              onCheckAllHealth={checkAllHealth}
+              onCheckAllHealth={()=>checkAllHealth()}
               healthChecking={healthChecking}
               healthProgress={healthProgress}
             />
