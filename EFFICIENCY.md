@@ -164,3 +164,20 @@ Cloudflare account analytics for November 1–21 returned 673,693,036 rows read 
 Production query insights showed eligibility LEFT JOIN blocker sets averaging 33,256,535 scanned rows, three runs totaling 99,769,605. Replace them with NOT IN membership lists, filtering NULL keys and preserving sent/sending/uncertain delivery and outbound reply suppression. Read-only production count probe of the replacement used 36,555 reads, zero writes (99.89% fewer than the historical average). No campaign or SMTP operation was used for the measurement. A regression disables SQLite automatic indexes to represent the problematic join-planning conditions.
 
 For capacity planning, measure sending, mailbox sync, preparation, dashboard and tracking separately. Today's writes include preparation/index/trigger costs, so dividing aggregate writes by sent messages does not establish steady-state send cost. Mail provider limits and shared-database throughput remain independent constraints. A 1,000-user deployment is not established by these usage percentages alone.
+
+## Measured read-efficiency pass — 23 November 2026
+
+Production analytics for the preceding 24 hours identified four batch-deletion preflight queries consuming 547,758,556 reads (136,939,639 average). Migration 0035 already supplies the missing lead-history seek index. Additional current costs were lead pagination, reply idempotency lookup, and dispatch attempts with no ready sender.
+
+Migration 0036 adds (status,created_at,email,id) lead pagination and a partial non-null message-idempotency index. Identical production read-only probes immediately before/after migration:
+
+| Probe | Before reads | After reads | Read reduction | SQL latency before/after |
+|---|---:|---:|---:|---:|
+| First 100 Ready leads ordered by created_at/email/id | 5,688 | 100 | 98.24% | 3.296 / 0.1977 ms |
+| Missing reply idempotency key | 21,637 | 0 | 100% | 184.7191 / 0.1762 ms |
+
+No contact content was returned by those probes. Pagination returned 100 rows in both cases; idempotency returned zero matches in both cases. Indexes add storage and writes when their indexed data changes; these are not write savings claims.
+
+Preparation preflight now requires at least one enabled due cached sender before permitting 150 dispatch workers. It still opens the gate for stale in-flight sends so uncertainty recovery is not stranded, and automatically opens when rolling quota capacity returns. No counters, credentials, account restrictions, cooldowns or uncertainty records are cleared. A regression verifies blocked, quota-ready, and stale-recovery states.
+
+Validation: 89 tests passed; Pages Functions build passed. These results establish over 90% read reduction for measured hot queries, not a 90% reduction in all Cloudflare usage. Accepted-delivery, quota, indexing and accounting writes remain necessary; an overall write or bill reduction needs a matched-volume production interval, including Workers request/CPU analytics. Historical query totals and a day with different send/import volume cannot establish that percentage.
