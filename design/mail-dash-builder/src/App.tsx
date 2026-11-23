@@ -164,17 +164,12 @@ export default function App() {
   if(syncLock.current)return;syncLock.current=true;setError('');
   const targets=rawAccounts.current.filter(a=>a.hasCredentials && ['Connected','IMAP only'].includes(a.connection) && (!retryOnly || failedSyncAccounts.current.has(a.id)));
   failedSyncAccounts.current=new Set();lastSyncIncludeSent.current=includeSent;setSyncHadErrors(false);
-  let completed=0,bounces=0,more=0,alreadySyncing=0;setNotice(`Checking up to 25 accounts at once · 0/${targets.length} completed`);
+  let completed=0,bounces=0,more=0,alreadySyncing=0;setNotice(`Checking up to 50 accounts at once · 0/${targets.length} completed`);
   try{const issues:string[]=[];
-   if(includeSent){
-    const accountByEmail=new Map(targets.map(a=>[a.email,a.id]));
-    const grouped=new Map<string,InboxThread[]>();
-    for(const thread of threads)if(thread.unread){const accountId=accountByEmail.get(thread.accountEmail);if(accountId){const group=grouped.get(accountId)||[];group.push(thread);grouped.set(accountId,group);}}
-    let verified=0;const total=[...grouped.values()].reduce((sum,group)=>sum+group.length,0);
-    await runSyncPool([...grouped.entries()],async([accountId,group])=>{for(const thread of group){try{const result=await api('mail/conversation',{threadId:thread.id,manual:true,reconcileUnread:true});if(result.busy)throw new Error('This mailbox is already syncing. Retry its unread check when the current sync finishes.');if(result.thread){const mapped=mapThread(result.thread,rawAccounts.current);setThreads(prev=>prev.filter(t=>!(result.retiredThreadIds || []).includes(t.id)).map(t=>t.id===mapped.id?mapped:t));}}catch(e){issues.push('Unread conversation '+thread.contactEmail+': '+(e as Error).message);failedSyncAccounts.current.add(accountId);}finally{verified++;setNotice(`Verifying unread conversations in Gmail: ${verified}/${total}`);}}},4);
-   }
-
+   const unreadByAccount=new Map<string,InboxThread[]>();
+   if(includeSent){const byEmail=new Map(targets.map(a=>[a.email,a.id]));for(const thread of threads)if(thread.unread){const id=byEmail.get(thread.accountEmail);if(id){const group=unreadByAccount.get(id)||[];group.push(thread);unreadByAccount.set(id,group);}}}
    await runSyncPool(targets,async a=>{
+    for(const thread of unreadByAccount.get(a.id)||[]){try{const result=await api('mail/conversation',{threadId:thread.id,manual:true,reconcileUnread:true});if(result.busy)throw new Error('Mailbox is already syncing; retry when it finishes.');if(result.thread){const mapped=mapThread(result.thread,rawAccounts.current);setThreads(prev=>prev.filter(t=>!(result.retiredThreadIds || []).includes(t.id)).map(t=>t.id===mapped.id?mapped:t));}}catch(e){issues.push('Unread conversation '+thread.contactEmail+': '+(e as Error).message);failedSyncAccounts.current.add(a.id);}}
     try{const result=await api('mail/sync',{accountId:a.id,manual:true,includeSent});
      bounces+=Number(result.bounces || 0);if(result.more)more++;if(result.busy){alreadySyncing++;failedSyncAccounts.current.add(a.id);issues.push(a.email+': another sync is still running. Retry when it finishes.');return;}
      const mailErrors=[...new Set([result.inboxError,result.sentError,result.bounceError].filter(Boolean).map((e:string)=>e.replace(/^.*?sync failed/,'Mailbox sync failed')))];if(mailErrors.length){issues.push(a.email+': '+mailErrors.join(' · '));failedSyncAccounts.current.add(a.id);}
@@ -184,8 +179,8 @@ export default function App() {
       if(result.threads.some((t:any)=>t.id===selectedThreadRef.current)){const detail=await api('thread?id='+encodeURIComponent(selectedThreadRef.current));const preview=incoming.find((t:InboxThread)=>t.id===detail.thread.id);setThreads(prev=>prev.map(t=>t.id===detail.thread.id?{...mapThread(detail.thread,rawAccounts.current),inboundAt:preview?.inboundAt || t.inboundAt}:t));}
      }
     }catch(e){issues.push(a.email+': '+(e as Error).message);failedSyncAccounts.current.add(a.id);}
-    finally{completed++;setNotice(`Checking mail: ${completed}/${targets.length} accounts · ${bounces} bounces recorded · Up to 25 accounts at once`);}
-   },25);
+    finally{completed++;setNotice(`Checking mail: ${completed}/${targets.length} accounts · ${bounces} bounces recorded · Up to 50 accounts at once`);}
+   },50);
    try{await refresh();}catch(e){issues.push('Mailbox checks completed, but refreshing the dashboard failed: '+(e as Error).message);}
    try{await refreshSending();}catch(e){issues.push('Refreshing sending statistics failed: '+(e as Error).message);}
 
