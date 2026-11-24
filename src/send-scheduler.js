@@ -7,10 +7,12 @@ export default {
       return;
     }
     const baseUrl = env.DASHBOARD_API_URL.replace(/\/+$/, '');
+    let senderSlots=Array.from({length:concurrency},(_,slot)=>slot);
     try{
       const response=await fetch(`${baseUrl}/api/internal/prepare-tick`,{method:'POST',headers:{Authorization:`Bearer ${env.BACKGROUND_CRON_SECRET}`,Origin:baseUrl,'Content-Type':'application/json'},body:'{}'});
       const progress=await response.json();
       if(!response.ok || progress.preparing || progress.dispatchReady!==true)return;
+      if(Array.isArray(progress.senderSlots)){senderSlots=[...new Set(progress.senderSlots)].filter(slot=>Number.isInteger(slot)&&slot>=0&&slot<concurrency).slice(0,concurrency);if(!senderSlots.length)return;}
     }catch{console.error('Preparation status was not confirmed; skipping dispatch.');return;}
     let remaining = sendsPerInvocation, attempts = 0, stopped = false, networkWarned=false;
     const worker = async (senderSlot) => {
@@ -40,6 +42,6 @@ export default {
         }
       }
     };
-    await Promise.all(Array.from({length:concurrency},(_,senderSlot)=>worker(senderSlot)));
+    await Promise.all(senderSlots.map(senderSlot=>worker(senderSlot)));
   }
 };

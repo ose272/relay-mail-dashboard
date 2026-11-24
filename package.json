@@ -5,7 +5,7 @@
   "type": "module",
   "scripts": {
     "start": "node server.mjs",
-    "test": "node --test src/domain.test.mjs src/api.test.mjs src/send-selection.test.mjs src/ready-senders.test.mjs src/bounces.test.mjs src/sync.test.mjs src/rebalance.test.mjs src/campaign-control.test.mjs src/message-text.test.mjs src/campaign-preparation.test.mjs src/budget.test.mjs src/engagement.test.mjs src/efficiency.test.mjs src/waiting-capacity.test.mjs src/reply-metrics.test.mjs",
+    "test": "node --test src/domain.test.mjs src/api.test.mjs src/send-selection.test.mjs src/ready-senders.test.mjs src/bounces.test.mjs src/sync.test.mjs src/rebalance.test.mjs src/campaign-control.test.mjs src/message-text.test.mjs src/campaign-preparation.test.mjs src/budget.test.mjs src/engagement.test.mjs src/efficiency.test.mjs src/waiting-capacity.test.mjs src/reply-metrics.test.mjs src/sender-lanes.test.mjs",
     "pages:build": "wrangler pages functions build functions --outdir .worker-build --compatibility-date 2026-11-16 --compatibility-flag nodejs_compat",
     "pages:dev": "wrangler pages dev ./public",
     "pages:deploy": "node scripts/deploy-maildash.mjs",
