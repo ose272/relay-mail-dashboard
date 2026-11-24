@@ -1,3 +1,4 @@
+import {FeatureControls,type FeatureFlags} from '../components/FeatureControls';
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { Archive, MailOpen, Search, Star, Send, ArrowLeft } from 'lucide-react';
 import { InboxThread, ThreadTag } from '../types/maildash';
@@ -11,6 +12,8 @@ import {
 } from '../components/ui/DesignSystem';
 
 interface InboxPageProps {
+  features:FeatureFlags;
+  onFeatureChange:(flags:Partial<FeatureFlags>)=>Promise<void>;
   conversationLoadingId:string;
   onLoadOlder:(id:string)=>void;
   onSync: (includeSent?:boolean) => Promise<void>;
@@ -27,7 +30,7 @@ interface InboxPageProps {
 type InboxFilter = 'All' | 'Unread' | 'Interested' | 'Starred' | 'Archived';
 
 export const InboxPage: React.FC<InboxPageProps> = ({
-  onSync, conversationLoadingId,onLoadOlder,
+  onSync, conversationLoadingId,onLoadOlder,features,onFeatureChange,
   threads,
   selectedThreadId,
   onSelectThread,
@@ -125,6 +128,7 @@ export const InboxPage: React.FC<InboxPageProps> = ({
 
         <div className="flex flex-col gap-2 items-start sm:items-end">
         <label className="text-[12px] text-[var(--color-muted)] flex items-center gap-2"><input type="checkbox" checked={includeSent} disabled={syncing} onChange={e=>setIncludeSent(e.target.checked)}/>Include replies sent from Gmail/mobile</label>
+        <FeatureControls mode="spam" disabled={syncing} features={features} onChange={onFeatureChange}/>
         <PortfolioPillButton
           variant="secondary"
           size="md"

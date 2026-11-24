@@ -263,10 +263,7 @@ async function loadState(db, options = {}) {
     `).bind(new Date(Date.now() - 86400000).toISOString()).all(),
     db.prepare(`SELECT id, email, name, store, status, created_at FROM leads
       WHERE status = ? ${cursorSql} ORDER BY created_at, email, id LIMIT ?`).bind(...leadBindings).all(),
-    db.prepare(`SELECT
-      SUM(CASE WHEN status = 'Ready' THEN 1 ELSE 0 END) AS active_count,
-      SUM(CASE WHEN status = 'Archived' THEN 1 ELSE 0 END) AS archived_count
-      FROM leads`).first(),
+    db.prepare("SELECT COALESCE((SELECT total FROM lead_status_counts WHERE status='Ready'),0) AS active_count,COALESCE((SELECT total FROM lead_status_counts WHERE status='Archived'),0) AS archived_count").first(),
     db.prepare('SELECT id, name, subject, body, archived_at FROM templates ORDER BY created_at, id').all(),
     db.prepare(`SELECT id, name, template_id, status, created_at, remaining, days, allocation_json,
       planned_sends, sent_count, pending_count, uncertain_count, failed_count, failure_codes,cancelled_count
@@ -283,10 +280,8 @@ async function loadState(db, options = {}) {
     `).all(),
     db.prepare(`
       SELECT b.id, b.file_name, b.created_at, b.imported_count, b.duplicate_count,
-        b.invalid_count, COUNT(i.lead_id) AS lead_count
+        b.invalid_count, b.lead_count
       FROM lead_import_batches b
-      LEFT JOIN lead_import_batch_items i ON i.batch_id = b.id
-      GROUP BY b.id
       ORDER BY b.created_at DESC
     `).all()
   ]);
@@ -941,6 +936,13 @@ async function handlePost(request, env, path) {
     return jsonResponse(200, { ok: notification.status === 'sent', ...notification });
   }
 
+  if(path==='/api/settings/features'){
+    const keys=['openTracking','planOpenTracking','linkTracking','includeSpamFolders'];
+    const changes=keys.filter(key=>Object.hasOwn(body,key));
+    if(!changes.length || Object.keys(body).some(key=>!keys.includes(key)) || changes.some(key=>typeof body[key]!=='boolean'))throw new HttpError(400,'Choose a supported feature toggle.');
+    await db.batch(changes.map(key=>db.prepare('INSERT INTO app_settings(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value WHERE value<>excluded.value').bind(key,body[key]?'1':'0')));
+    return jsonResponse(200,{ok:true,features:Object.fromEntries(changes.map(key=>[key,body[key]]))});
+  }
   if (path === '/api/settings') {
     const cap = Number(body.cap);
     const healthEmail = typeof body.healthNotificationEmail === 'string' ? body.healthNotificationEmail.trim().toLowerCase() : undefined;
@@ -1712,7 +1714,7 @@ async function handlePost(request, env, path) {
 
     const priorRequest = await db.prepare(`
       SELECT id, thread_id, send_state, body, message_id, in_reply_to, references_json, time
-      FROM messages WHERE idempotency_key = ?
+      FROM messages WHERE idempotency_key<>'' AND idempotency_key = ?
     `).bind(requestId).first();
     if (priorRequest) {
       if (priorRequest.thread_id !== thread.id) throw new HttpError(409, 'This reply request belongs to a different conversation.');
@@ -1816,6 +1818,7 @@ async function handleRequest({ request, env }) {
   const url = new URL(request.url);
   const path = url.pathname;
   try {
+    if(request.method==='GET' && path==='/api/usage')return jsonResponse(200,env.USAGE_SNAPSHOT);
     if(request.method==='GET' && path==='/api/analytics')return jsonResponse(200,await loadEngagementAnalytics(env.DB,{campaignId:url.searchParams.get('campaignId'),all:url.searchParams.get('scope')==='all',configured:Boolean(env.OPEN_TRACKING_SECRET)}));
     if (request.method === 'GET' && path === '/api/state') return jsonResponse(200, await loadState(env.DB, {
       leadScope: url.searchParams.get('leadScope'),
@@ -1898,6 +1901,7 @@ export async function onRequest(context) {
    return jsonResponse(503,{error:'Database usage could not be checked. Retry shortly; sending remains safely held.',code:'APP_USAGE_UNAVAILABLE'});
  }
  const budgets=requestUsageBudgets(env,request.method,url.pathname);
+ const usageSnapshot={day,resetAt,tier:env.APP_USAGE_TIER==='paid'?'paid':'free',reads:Number(initial.rows_read||0),writes:Number(initial.rows_written||0),readLimit:budgets.reads,writeLimit:budgets.writes,sendingHeld:initial.rows_read>=budgets.reads||initial.rows_written>=budgets.writes};
  if((initial.rows_read>=budgets.reads || initial.rows_written>=budgets.writes) && !allowBudgetRead(env,request.method,url.pathname)){
    if(url.pathname==='/api/internal/send-tick'){
      await env.DB.prepare(`UPDATE campaigns SET status='Scheduled',next_send_at=? WHERE name='Direct send'
@@ -1923,7 +1927,7 @@ export async function onRequest(context) {
      }catch(error){controller.error(error);}
    }}),{headers:{'Content-Type':'application/json; charset=utf-8','Cache-Control':'no-store'}});
  }
- const response=await handleRequest({...context,env:{...env,DB:meter.db}});
+ const response=await handleRequest({...context,env:{...env,DB:meter.db,USAGE_SNAPSHOT:usageSnapshot}});
  const finish=()=>meter.flush(day).catch(()=>{});
  if(response.headers.get('Content-Type')?.includes('application/x-ndjson') && response.body){
    const reader=response.body.getReader();

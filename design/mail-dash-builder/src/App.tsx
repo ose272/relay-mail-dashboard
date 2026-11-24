@@ -1,3 +1,4 @@
+import type {FeatureFlags} from './components/FeatureControls';
 import {NotificationsPage} from './pages/NotificationsPage';
 import {runSyncPool} from './lib/sync-pool';
 import { useCallback, useEffect, useRef, useState } from 'react';
@@ -78,7 +79,7 @@ export default function App() {
   }catch(e){if(!stopped)report(e);}finally{polling=false;}};
   void poll(true);
   if(activePage!=='sending' || sendingState.status!=='running')return()=>{stopped=true;};
-  const timer=setInterval(()=>void poll(),sendingState.backendStatus==='Scheduled'?15000:2000);
+  const timer=setInterval(()=>void poll(),sendingState.backendStatus==='Scheduled'?60000:5000);
   return()=>{stopped=true;clearInterval(timer);};
  },[loaded,unauthorized,usageBlocked,activePage,sendingState.status,sendingState.backendStatus,refreshSending,report]);
  useEffect(()=>{const timer=setInterval(()=>setThreads(prev=>prev.filter(t=>Date.parse(t.inboundAt || '')>=Date.now()-86400000)),60000);return()=>clearInterval(timer);},[]);
@@ -157,6 +158,8 @@ export default function App() {
  };
  useEffect(()=>{if(!loaded || unauthorized || usageBlocked || activePage!=='accounts' || autoHealthStarted.current)return;if(!rawAccounts.current.some(a=>a.hasCredentials && !a.healthCheckedAt))return;autoHealthStarted.current=true;void checkAllHealth(true);},[loaded,unauthorized,usageBlocked,activePage]);
  const handleRunDnsCheck=(id:string)=>action(()=>api('account/health/check',{accountId:id,force:true,suppressNotification:true}));
+ const saveFeatures=async(flags:Partial<FeatureFlags>)=>{await api('settings/features',flags);setSettings(prev=>({...prev,...flags}));};
+ const refreshUsage=(usage:{sendingHeld:boolean})=>{setUsageBlocked(usage.sendingHeld);if(!usage.sendingHeld)setError(prev=>/application.*budget|Database usage/i.test(prev)?'':prev);};
  const saveSettings=(next:WorkspaceSettings)=>action(()=>api('settings',{cap:next.dailyWorkspaceCap,workspaceName:next.workspaceName,healthNotificationEmail:next.healthNotificationEmail || '',linkTracking:Boolean(next.linkTracking),openTracking:Boolean(next.openTracking),planOpenTracking:Boolean(next.planOpenTracking),includeSpamFolders:Boolean(next.includeSpamFolders)}));
  const nextLeadPage=()=>refresh(leadPage.nextCursor).catch(report);
  const syncLock=useRef(false);
@@ -243,7 +246,7 @@ export default function App() {
           {!loaded && !error && <p role="status">Loading your workspace…</p>}
           {importProgress && <div role="status" className="mb-5 p-4 rounded-[14px] border border-[var(--color-border)] bg-[var(--color-surface)]"><div className="flex justify-between gap-3 text-[13px] mb-3"><strong>Lead import · {importProgress.phase}</strong><span>{importProgress.phase==='complete'?'100%':importProgress.total?Math.min(99,Math.floor(100*importProgress.completed/importProgress.total))+'%':''}</span></div><progress aria-label="Lead import progress" className="w-full h-2 accent-[var(--color-brand)]" max={importProgress.total || 1} value={importProgress.phase==='complete'?(importProgress.total || 1):importProgress.total===null?undefined:importProgress.completed}/><p className="mt-2 text-[12px] text-[var(--color-muted)]">{importProgress.result?`${importProgress.result.imported} imported · ${importProgress.result.duplicates} duplicates · ${importProgress.result.invalid} invalid`:importProgress.error || 'Saving real import records. You can follow this progress from any section.'}</p>{['complete','error'].includes(importProgress.phase)&&<button className="mt-2 underline text-[12px]" onClick={()=>setImportProgress(null)}>Dismiss</button>}</div>}
           {busy && <p role="status" className="mb-3 text-[var(--color-muted)]">Working…</p>}
-          <fieldset disabled={busy || (usageBlocked && activePage!=='inbox')} className="min-w-0 contents">
+          <fieldset disabled={busy} className="min-w-0 contents">
           {loaded && !unauthorized && activePage==='notifications' && <NotificationsPage onDelete={deleteNotification} onDeleteRead={deleteReadNotifications} events={notifications} hasMore={!!notificationCursor} onRefresh={()=>void loadNotifications()} onLoadMore={()=>void loadNotifications(true)} onMarkRead={markNotificationRead} onReviewAccount={()=>{setActivePage('accounts');refresh().catch(report);}}/>}
           {loaded && !unauthorized && activePage === 'dashboard'  && (
             <DashboardPage leadTotal={leadTotal} campaignCount={campaignCount}
@@ -257,7 +260,7 @@ export default function App() {
             />
           )}
           {loaded && !unauthorized && activePage === 'inbox' && (
-            <InboxPage conversationLoadingId={conversationLoadingId} onLoadOlder={id=>void handleSelectThread(id,true)} onSync={syncMail}
+            <InboxPage features={settings} onFeatureChange={saveFeatures} conversationLoadingId={conversationLoadingId} onLoadOlder={id=>void handleSelectThread(id,true)} onSync={syncMail}
               threads={threads}
               selectedThreadId={selectedThreadId}
               onSelectThread={handleSelectThread}
@@ -269,7 +272,7 @@ export default function App() {
             />
           )}
           {loaded && !unauthorized && activePage === 'sending' && (
-            <SendingPage
+            <SendingPage features={settings} onFeatureChange={saveFeatures} onUsageRefresh={refreshUsage}
               sendingState={sendingState}
               accounts={accounts}
               onToggleRunStatus={handleToggleRunStatus}

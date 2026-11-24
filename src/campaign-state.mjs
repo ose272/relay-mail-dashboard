@@ -1,4 +1,4 @@
-export const finishAttemptSql=`UPDATE campaigns SET status=CASE WHEN pending_count=0 AND in_flight_count=0 THEN CASE WHEN uncertain_count>0 THEN 'Needs review' ELSE 'Complete' END ELSE 'Sending' END,next_send_at=CASE WHEN pending_count=0 THEN NULL ELSE ? END WHERE id=? AND status IN ('Sending','Scheduled','Dry run','Paused')`;
+export const finishAttemptSql=`UPDATE campaigns SET status=CASE WHEN pending_count=0 AND in_flight_count=0 THEN CASE WHEN uncertain_count>0 THEN 'Needs review' ELSE 'Complete' END ELSE 'Sending' END,next_send_at=CASE WHEN pending_count=0 THEN NULL ELSE ? END WHERE id=? AND status IN ('Sending','Scheduled','Dry run','Paused') AND (status<>'Sending' OR (pending_count=0 AND in_flight_count=0))`;
 export async function reviewDeliveries(db,{campaignId,deliveryId,action}){
  if(!['retry','dismiss'].includes(action))throw new Error('Choose retry or dismiss.');
  const campaign=await db.prepare('SELECT status FROM campaigns WHERE id=?').bind(campaignId).first();

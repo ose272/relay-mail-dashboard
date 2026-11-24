@@ -1,3 +1,5 @@
+import {FeatureControls,type FeatureFlags} from '../components/FeatureControls';
+import {DailyUsage} from '../components/DailyUsage';
 import { TrackingAnalytics } from '../components/TrackingAnalytics';
 import React, { useMemo, useState } from 'react';
 import { ArrowUpDown, RotateCcw, CheckCircle2, Trash2 } from 'lucide-react';
@@ -23,6 +25,9 @@ import {
 } from '../components/ui/DesignSystem';
 
 interface SendingPageProps {
+  features:FeatureFlags;
+  onFeatureChange:(flags:Partial<FeatureFlags>)=>Promise<void>;
+  onUsageRefresh:(usage:{sendingHeld:boolean})=>void;
   sendingState: SendingState;
   accounts: ConnectedAccount[];
   onResumePreparation:()=>void;
@@ -43,7 +48,7 @@ interface SendingPageProps {
 type TableFilter = 'All' | DeliveryResultStatus;
 
 export const SendingPage: React.FC<SendingPageProps> = ({
-  sendingState,
+  sendingState, features,onFeatureChange,onUsageRefresh,
   accounts,
   onToggleRunStatus,
   onInitiateSending, onRebalance, onCancel, onResumePreparation, preparationRequestFailed,
@@ -138,7 +143,9 @@ export const SendingPage: React.FC<SendingPageProps> = ({
         />
       )}
 
-      <TrackingAnalytics campaignId={sendingState.id}/>
+      <DailyUsage onRefresh={onUsageRefresh}/>
+      <FeatureControls features={features} onChange={onFeatureChange}/>
+      <TrackingAnalytics key={`${features.openTracking}:${features.planOpenTracking}:${features.linkTracking}`} campaignId={sendingState.id}/>
       {/* 4 KPI Metric Cards */}
       <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-6">
         <MetricCard
