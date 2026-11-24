@@ -1503,7 +1503,7 @@ async function handlePost(request, env, path) {
 
     if (!delivery) {
       const active = await db.prepare("SELECT 1 FROM campaign_deliveries WHERE campaign_id=? AND status='sending' LIMIT 1").bind(campaignId).first();
-      if (active) return jsonResponse(200, {ok:true,busy:true});
+      if (active) return jsonResponse(200, {ok:true,busy:true,noReadySender:true});
       // The campaign counters are maintained by a trigger. Only inspect the
       // next queued delivery here; never aggregate every campaign delivery on
       // each scheduler tick.

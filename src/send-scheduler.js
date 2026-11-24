@@ -30,6 +30,7 @@ export default {
             stopped = true; return;
           }
           if (result.busy) {
+            if(result.noReadySender)return;
             remaining++;
             await new Promise(resolve => setTimeout(resolve, 100));
             continue;
