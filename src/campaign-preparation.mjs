@@ -1,3 +1,4 @@
+import {recoverWaitingCapacity} from './waiting-capacity.mjs';
 import {SEND_CONCURRENCY} from './send-limits.mjs';
 export const PREPARATION_CHUNK_SIZE=250;
 const senderChunkSize=25,leaseMs=60000;
@@ -69,8 +70,9 @@ export async function continuePreparation(db,id,{maxChunks=2,now=new Date()}={})
 }
 export async function continueNextPreparation(db){
  const next=await db.prepare(`SELECT p.campaign_id FROM campaign_preparations p JOIN campaigns c ON c.id=p.campaign_id WHERE c.status='Preparing' AND p.phase NOT IN ('complete','cancelled') AND (p.lease_until IS NULL OR p.lease_until<=?) ORDER BY p.heartbeat_at LIMIT 1`).bind(new Date().toISOString()).first();
- const ready=async()=>Boolean(await db.prepare("SELECT 1 FROM campaigns WHERE name='Direct send' AND status IN ('Sending','Scheduled') AND pending_count>0 AND (next_send_at IS NULL OR next_send_at<=?) AND (EXISTS(SELECT 1 FROM sender_ready r WHERE r.campaign_id=campaigns.id AND r.enabled=1 AND r.next_delivery_id IS NOT NULL AND r.ready_at<=?) OR EXISTS(SELECT 1 FROM campaign_deliveries d WHERE d.campaign_id=campaigns.id AND d.status='sending' AND d.started_at<=?)) LIMIT 1").bind(new Date().toISOString(),new Date().toISOString(),new Date(Date.now()-120000).toISOString()).first());
- if(!next)return {preparing:false,dispatchReady:await ready()};
+ const ready=async()=>{const stamp=new Date().toISOString();const row=await db.prepare("SELECT id,next_send_at FROM campaigns WHERE name='Direct send' AND status IN ('Sending','Scheduled') AND pending_count>0 AND (EXISTS(SELECT 1 FROM sender_ready r WHERE r.campaign_id=campaigns.id AND r.enabled=1 AND r.next_delivery_id IS NOT NULL AND r.ready_at<=?) OR EXISTS(SELECT 1 FROM campaign_deliveries d WHERE d.campaign_id=campaigns.id AND d.status='sending' AND d.started_at<=?)) LIMIT 1").bind(stamp,new Date(Date.now()-120000).toISOString()).first();if(row?.next_send_at>stamp)await db.prepare("UPDATE campaigns SET next_send_at=? WHERE id=? AND status IN('Sending','Scheduled') AND next_send_at>?").bind(stamp,row.id,stamp).run();return Boolean(row);};
+ if(!next){let dispatchReady=await ready();if(!dispatchReady){const recovery=await recoverWaitingCapacity(db);if(recovery.checked)dispatchReady=await ready();}return {preparing:false,dispatchReady};}
  const result=await continuePreparation(db,next.campaign_id,{maxChunks:16});
  return {preparing:result.status==='Preparing',dispatchReady:result.status!=='Preparing' && await ready(),preparation:result};
 }
+

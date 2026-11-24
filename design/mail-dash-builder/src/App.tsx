@@ -39,6 +39,9 @@ export default function App() {
  const [preparationRequestError,setPreparationRequestError]=useState('');
  const [notifications,setNotifications]=useState<any[]>([]),[notificationCursor,setNotificationCursor]=useState<string|null>(null);
  const [accountAlerts,setAccountAlerts]=useState<any[]>([]);
+ const [dismissedAccountAlerts,setDismissedAccountAlerts]=useState<string[]>(()=>{try{const value=JSON.parse(localStorage.getItem('relay-dismissed-account-alerts')||'[]');return Array.isArray(value)?value.filter(v=>typeof v==='string').slice(-200):[];}catch{return [];}});
+ const visibleAccountAlerts=accountAlerts.filter(a=>!dismissedAccountAlerts.includes(a.id));
+ const dismissAccountAlerts=()=>{const ids=[...new Set([...dismissedAccountAlerts,...accountAlerts.map(a=>String(a.id))])].slice(-200);setDismissedAccountAlerts(ids);localStorage.setItem('relay-dismissed-account-alerts',JSON.stringify(ids));};
  const lastActivityAt=useRef(0);
  const [loaded,setLoaded]=useState(false), [error,setError]=useState(''), [unauthorized,setUnauthorized]=useState(false), [busy,setBusy]=useState(false);
  const selectedThreadRef=useRef('');
@@ -241,7 +244,7 @@ export default function App() {
 
         <main aria-busy={busy} className="flex-1 px-5 sm:px-10 pt-8 pb-6 max-w-[1260px] w-full mx-auto">
           {error && <div role="alert" className="mb-5 p-4 rounded-[14px] border border-red-400 text-[var(--color-danger)]">{syncHadErrors ? <><p>Some mailbox checks could not finish. This does not mean the accounts are restricted. Successful results have been kept.</p><details className="mt-2"><summary className="cursor-pointer underline">View sync error details</summary><p className="mt-2 break-words max-h-64 overflow-y-auto">{error}</p></details></> : error}<button type="button" aria-label="Dismiss error notification" className="ml-4 underline" onClick={()=>{setError('');setSyncHadErrors(false);}}>Dismiss</button><button className="ml-4 underline" onClick={() => {setError('');setUsageBlocked(false);if(syncHadErrors)void syncMail(lastSyncIncludeSent.current,true);else refresh().catch(report);}}>Retry</button>{unauthorized && <a className="ml-4 underline" href="/login">Sign in</a>}</div>}
-          {accountAlerts.length>0 && <div role="alert" className="mb-5 p-4 rounded-[14px] border border-amber-400 bg-[var(--color-surface)] text-[13px]"><strong>Sender accounts need attention</strong>{accountAlerts.slice(0,3).map(a=><p key={a.id} className="mt-2 break-words">{a.accountEmail} · {a.status}: {a.message}</p>)}<button className="mt-3 underline" onClick={()=>{setActivePage('accounts');refresh().catch(report);}}>Review accounts</button></div>}
+          {visibleAccountAlerts.length>0 && <div role="alert" className="mb-5 p-4 rounded-[14px] border border-amber-400 bg-[var(--color-surface)] text-[13px]"><div className="flex justify-between items-center gap-3"><strong>Sender accounts need attention</strong><button type="button" aria-label="Dismiss sender account warning" className="underline shrink-0" onClick={dismissAccountAlerts}>Dismiss</button></div>{visibleAccountAlerts.slice(0,3).map(a=><p key={a.id} className="mt-2 break-words">{a.accountEmail} · {a.status}: {a.message}</p>)}<button className="mt-3 underline" onClick={()=>{setActivePage('accounts');refresh().catch(report);}}>Review accounts</button></div>}
           {notice && <div role="status" className="mb-5 p-4 rounded-[14px] border border-[var(--color-border)] text-[13px]">{notice}{!busy && <button className="ml-3 underline" onClick={()=>setNotice('')}>Dismiss</button>}</div>}
           {!loaded && !error && <p role="status">Loading your workspace…</p>}
           {importProgress && <div role="status" className="mb-5 p-4 rounded-[14px] border border-[var(--color-border)] bg-[var(--color-surface)]"><div className="flex justify-between gap-3 text-[13px] mb-3"><strong>Lead import · {importProgress.phase}</strong><span>{importProgress.phase==='complete'?'100%':importProgress.total?Math.min(99,Math.floor(100*importProgress.completed/importProgress.total))+'%':''}</span></div><progress aria-label="Lead import progress" className="w-full h-2 accent-[var(--color-brand)]" max={importProgress.total || 1} value={importProgress.phase==='complete'?(importProgress.total || 1):importProgress.total===null?undefined:importProgress.completed}/><p className="mt-2 text-[12px] text-[var(--color-muted)]">{importProgress.result?`${importProgress.result.imported} imported · ${importProgress.result.duplicates} duplicates · ${importProgress.result.invalid} invalid`:importProgress.error || 'Saving real import records. You can follow this progress from any section.'}</p>{['complete','error'].includes(importProgress.phase)&&<button className="mt-2 underline text-[12px]" onClick={()=>setImportProgress(null)}>Dismiss</button>}</div>}
@@ -272,7 +275,7 @@ export default function App() {
             />
           )}
           {loaded && !unauthorized && activePage === 'sending' && (
-            <SendingPage features={settings} onFeatureChange={saveFeatures} onUsageRefresh={refreshUsage}
+            <SendingPage features={settings} onFeatureChange={saveFeatures}
               sendingState={sendingState}
               accounts={accounts}
               onToggleRunStatus={handleToggleRunStatus}
@@ -323,7 +326,7 @@ export default function App() {
             />
           )}
           {loaded && !unauthorized && activePage === 'settings' && (
-            <SettingsPage
+            <SettingsPage onUsageRefresh={refreshUsage}
               settings={settings}
               onSaveSettings={saveSettings}
               theme={theme}

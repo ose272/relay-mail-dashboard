@@ -1,15 +1,17 @@
+import {DailyUsage} from '../components/DailyUsage';
 import { useEffect, useState } from 'react';
 import type { WorkspaceSettings } from '../types/maildash';
 import { PortfolioPillButton, SurfacePanel } from '../components/ui/DesignSystem';
 
 interface Props {
+  onUsageRefresh:(usage:{sendingHeld:boolean})=>void;
   settings: WorkspaceSettings;
   onSaveSettings: (s: WorkspaceSettings) => Promise<unknown>;
   theme: 'light' | 'dark';
   onSetTheme: (s: 'light' | 'dark') => void;
 }
 
-export function SettingsPage({ settings, onSaveSettings, theme, onSetTheme }: Props) {
+export function SettingsPage({ settings, onSaveSettings, theme, onSetTheme,onUsageRefresh }: Props) {
   const [draft, setDraft] = useState(settings);
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
@@ -44,6 +46,7 @@ export function SettingsPage({ settings, onSaveSettings, theme, onSetTheme }: Pr
         </PortfolioPillButton>
       </div>
       {saved && <p role="status">Changes saved.</p>}
+      <DailyUsage onRefresh={onUsageRefresh}/>
 
       <SurfacePanel className="p-6">
         <form onSubmit={save} className="space-y-6 max-w-[780px]">

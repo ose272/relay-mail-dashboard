@@ -1,3 +1,4 @@
+import {ProgressTrack} from '../components/ProgressTrack';
 import { TrackingAnalytics } from '../components/TrackingAnalytics';
 import type { ConnectedAccount, InboxThread, Lead, NavPage, ScoutingPlan, SendingState } from '../types/maildash';
 import { MetricCard, SurfacePanel, PortfolioPillButton } from '../components/ui/DesignSystem';
@@ -29,9 +30,7 @@ export function DashboardPage({
   const displaySent = isCancelled ? 0 : sendingState.sentCount;
   const displayPlanned = isCancelled ? 0 : sendingState.plannedTotal;
   const displayQueued = isCancelled ? 0 : sendingState.queuedCount;
-  const progressPercent = isCancelled
-    ? 0
-    : Math.min(100, (100 * displaySent) / Math.max(1, displayPlanned));
+  const displayProcessed=Math.max(0,displayPlanned-displayQueued);
 
   return (
     <div className="space-y-6">
@@ -91,16 +90,11 @@ export function DashboardPage({
               ? 'Campaign cancelled. Initiate a new send when ready.'
               : sendingState.runSubtitle}
           </p>
-          <div className="h-2 bg-[var(--color-subtle)] rounded-full overflow-hidden">
-            <div
-              className="h-full bg-[var(--color-brand)]"
-              style={{ width: `${progressPercent}%` }}
-            />
-          </div>
+          <ProgressTrack key={sendingState.id || 'overview'} value={displayProcessed} max={displayPlanned} label="Overview campaign processing progress"/>
           <p className="text-[12px]">
             {isCancelled
               ? '0 sent of 0 planned · 0 queued'
-              : `${displaySent} sent of ${displayPlanned} planned · ${displayQueued} queued`}
+              : `${displayProcessed} of ${displayPlanned} processed · ${displaySent} confirmed · ${displayQueued} pending`}
           </p>
         </SurfacePanel>
 

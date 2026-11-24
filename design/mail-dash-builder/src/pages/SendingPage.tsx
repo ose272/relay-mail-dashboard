@@ -1,5 +1,5 @@
 import {FeatureControls,type FeatureFlags} from '../components/FeatureControls';
-import {DailyUsage} from '../components/DailyUsage';
+import {SendingProgress} from '../components/SendingProgress';
 import { TrackingAnalytics } from '../components/TrackingAnalytics';
 import React, { useMemo, useState } from 'react';
 import { ArrowUpDown, RotateCcw, CheckCircle2, Trash2 } from 'lucide-react';
@@ -27,7 +27,6 @@ import {
 interface SendingPageProps {
   features:FeatureFlags;
   onFeatureChange:(flags:Partial<FeatureFlags>)=>Promise<void>;
-  onUsageRefresh:(usage:{sendingHeld:boolean})=>void;
   sendingState: SendingState;
   accounts: ConnectedAccount[];
   onResumePreparation:()=>void;
@@ -48,7 +47,7 @@ interface SendingPageProps {
 type TableFilter = 'All' | DeliveryResultStatus;
 
 export const SendingPage: React.FC<SendingPageProps> = ({
-  sendingState, features,onFeatureChange,onUsageRefresh,
+  sendingState, features,onFeatureChange,
   accounts,
   onToggleRunStatus,
   onInitiateSending, onRebalance, onCancel, onResumePreparation, preparationRequestFailed,
@@ -79,13 +78,6 @@ export const SendingPage: React.FC<SendingPageProps> = ({
         : a.timestampMs - b.timestampMs
     );
   }, [sendingState.records, statusFilter, sortLatestFirst]);
-
-  const progressPct = Math.min(
-    100,
-    Math.round(
-      (sendingState.sentCount / Math.max(1, sendingState.plannedTotal)) * 10000
-    ) / 100
-  );
 
   const [submitting,setSubmitting]=useState(false);
   const [cancelOpen,setCancelOpen]=useState(false),[cancelling,setCancelling]=useState(false);
@@ -143,7 +135,6 @@ export const SendingPage: React.FC<SendingPageProps> = ({
         />
       )}
 
-      <DailyUsage onRefresh={onUsageRefresh}/>
       <FeatureControls features={features} onChange={onFeatureChange}/>
       <TrackingAnalytics key={`${features.openTracking}:${features.planOpenTracking}:${features.linkTracking}`} campaignId={sendingState.id}/>
       {/* 4 KPI Metric Cards */}
@@ -237,25 +228,7 @@ export const SendingPage: React.FC<SendingPageProps> = ({
           {sendingState.id && sendingState.sentCount===0 && sendingState.queuedCount>0 && <p className="text-[13px] text-[var(--color-muted)]">No messages have been confirmed sent yet. Delivery progress increases only after the sender confirms a send.</p>}
           {sendingState.id && sendingState.status==='paused' && !sendingState.needsReviewCount && sendingState.queuedCount>0 && <div className="flex flex-col sm:flex-row sm:items-center gap-3 text-[12px] text-[var(--color-muted)]"><PortfolioPillButton variant="secondary" onClick={onRebalance}>Use newly connected accounts</PortfolioPillButton><span>Redistribute queued work across connected accounts before resuming.</span></div>}
           {sendingState.backendStatus==='Preparing' && <div role="status" className="space-y-3 p-4 rounded-[12px] bg-[var(--color-subtle)]"><strong className="text-[14px]">{(sendingState.preparation?.error || preparationRequestFailed)?'Preparation interrupted':'Preparing campaign'}</strong><p className="text-[13px]">{sendingState.preparation?.prepared || 0} of {sendingState.preparation?.total || sendingState.plannedTotal} delivery records saved · {sendingState.preparation?.readySenders || 0} of {sendingState.preparation?.senders || 0} sender queues ready</p><progress aria-label="Campaign preparation progress" className="w-full h-2" max={(sendingState.preparation?.total || 0)+(sendingState.preparation?.senders || 0)||1} value={(sendingState.preparation?.prepared || 0)+(sendingState.preparation?.readySenders || 0)}/><p className="text-[12px] text-[var(--color-muted)]">Sending begins after delivery records and sender queues are ready. Progress is saved after each batch.</p>{(sendingState.preparation?.error || preparationRequestFailed) && sendingState.preparation?.error!=='LEGACY_PREPARATION_REVIEW' && <button type="button" className="underline text-[13px]" onClick={onResumePreparation}>Resume preparation</button>}</div>}
-          {/* Delivery Progress */}
-          <div className="space-y-2.5">
-            <div className="flex items-center justify-between gap-4">
-              <span className="text-[11px] font-semibold uppercase tracking-[0.04em] text-[var(--color-muted)]">
-                DELIVERY PROGRESS
-              </span>
-              <span className="text-[12px] text-[var(--color-muted)] tabular-nums">
-                {sendingState.sentCount} sent of {sendingState.plannedTotal} planned ({progressPct}%)
-              </span>
-            </div>
-            <div role="progressbar" aria-label="Confirmed delivery progress" aria-valuemin={0} aria-valuemax={sendingState.plannedTotal || 1} aria-valuenow={sendingState.sentCount} className="w-full h-2 rounded-full bg-[var(--color-subtle)] overflow-hidden">
-              <div
-                className="h-full rounded-full bg-[var(--color-brand)] transition-[width] duration-1000 ease-out motion-reduce:transition-none"
-                style={{ width: `${progressPct}%` }}
-              />
-            </div>
-          </div>
-
-          {sendingState.id && <p role="status" className="text-[12px] text-[var(--color-muted)] tabular-nums">{sendingState.status==='running' ? sendingState.inFlight ? `${sendingState.inFlight} accounts sending now · ` : sendingState.backendStatus==='Scheduled' && sendingState.nextSendAt ? `Scheduled for ${new Date(sendingState.nextSendAt).toLocaleString('en-GB',{timeZone:'Africa/Lagos'})} Lagos time · ` : 'Waiting for the next background batch · ' : ''}{sendingState.updatedAt ? `Updated ${new Date(sendingState.updatedAt).toLocaleTimeString('en-GB',{timeZone:'Africa/Lagos'})} · ` : ''}Accepted sends minus recorded bounces · Check bounces with manual inbox sync{sendingState.status==='running' && sendingState.backendStatus==='Sending' ? ' · Live counters refresh every 2 seconds' : ''}</p>}
+          <SendingProgress key={sendingState.id || 'no-campaign'} run={sendingState}/>
 
           {/* Activity Table Header Controls */}
           <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
