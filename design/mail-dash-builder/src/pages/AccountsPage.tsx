@@ -95,7 +95,7 @@ export const AccountsPage: React.FC<AccountsPageProps> = ({
             Sender accounts
           </h1>
           <p className="text-[14px] text-[var(--color-muted)] mt-1">
-            Manage connected Gmail mailboxes, rolling daily quotas, and connection health.
+            Manage connected Gmail mailboxes, rolling 10-hour quotas, and connection health.
           </p>
         </div>
 
@@ -257,7 +257,7 @@ export const AccountsPage: React.FC<AccountsPageProps> = ({
                             setLimitDraft(acc.dailyLimit);
                           }}
                           className="w-8 h-8 rounded-[8px] border border-[var(--color-border)] bg-[var(--color-surface)] text-[var(--color-muted)] hover:text-[var(--color-text)] inline-flex items-center justify-center cursor-pointer"
-                          title="Edit daily limit"
+                          title="Edit send cap"
                           aria-label={`Edit limit for ${acc.email}`}
                         >
                           <SlidersHorizontal size={13} />
@@ -283,13 +283,13 @@ export const AccountsPage: React.FC<AccountsPageProps> = ({
       <ModalShell
         open={Boolean(editingAccount)}
         onClose={() => setEditingAccount(null)}
-        title="Configure daily send cap"
+        title="Configure send cap"
         subtitle={editingAccount?.email}
       >
         <form onSubmit={handleLimitSave} className="space-y-4">
           <div>
             <label className="block text-[12px] font-medium text-[var(--color-text)] mb-1.5">
-              Maximum messages per 24 hours
+              Maximum messages per 10 hours
             </label>
             <input
               type="number"
@@ -300,7 +300,7 @@ export const AccountsPage: React.FC<AccountsPageProps> = ({
               className="w-full h-[42px] px-3.5 rounded-[10px] border border-[var(--color-border)] bg-[var(--color-surface)] text-[14px] text-[var(--color-text)] tabular-nums focus:outline-none focus:border-[var(--color-brand)]"
             />
             <p className="text-[11px] text-[var(--color-muted)] mt-1.5">
-              Choose 1–40 messages per rolling 24 hours.
+              Choose 1–40 messages per rolling 10 hours.
             </p>
           </div>
           <div className="pt-2 flex items-center justify-end gap-3">
@@ -342,7 +342,7 @@ export const AccountsPage: React.FC<AccountsPageProps> = ({
           <label className="block text-[12px] font-medium">Google app password<input type="password" required autoComplete="new-password" value={appPassword} onChange={e=>setAppPassword(e.target.value)} className="mt-2 w-full h-[40px] px-3.5 rounded-[10px] border border-[var(--color-border)] bg-[var(--color-surface)]"/><span className="block mt-2 text-[var(--color-muted)]">Use a 16-character Google app password. It is never displayed after saving.</span></label>
           <div>
             <label className="block text-[12px] font-medium text-[var(--color-text)] mb-1">
-              Initial daily send cap
+              Initial 10-hour send cap
             </label>
             <input
               type="number"

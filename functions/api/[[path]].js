@@ -1,3 +1,4 @@
+import { SEND_WINDOW_MS } from '../../src/send-window.mjs';
 import {customerAuth} from '../_lib/customer-auth.js';
 import {applyIncomingState,applySentState} from '../../src/thread-state.mjs';
 import {finishAttemptSql,reviewDeliveries} from '../../src/campaign-state.mjs';
@@ -261,7 +262,7 @@ async function loadState(db, options = {}) {
         paused, connection, imap_verified_at, smtp_verified_at,
         last_sync_at, credential_ciphertext, health_status, health_checked_at, health_code, health_message
       FROM accounts ORDER BY created_at, email
-    `).bind(new Date(Date.now() - 86400000).toISOString()).all(),
+    `).bind(new Date(Date.now() - SEND_WINDOW_MS).toISOString()).all(),
     db.prepare(`SELECT id, email, name, store, status, created_at FROM leads
       WHERE status = ? ${cursorSql} ORDER BY created_at, email, id LIMIT ?`).bind(...leadBindings).all(),
     db.prepare("SELECT COALESCE((SELECT total FROM lead_status_counts WHERE status='Ready'),0) AS active_count,COALESCE((SELECT total FROM lead_status_counts WHERE status='Archived'),0) AS archived_count").first(),
@@ -1019,7 +1020,7 @@ async function handlePost(request, env, path) {
         WHERE status IN ('sending', 'sent', 'uncertain')
           AND COALESCE(sent_at, started_at) > ?
         GROUP BY account_id
-      `).bind(new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString()).all(),
+      `).bind(new Date(Date.now() - SEND_WINDOW_MS).toISOString()).all(),
       db.prepare('SELECT id, name, subject, body FROM templates WHERE archived_at IS NULL ORDER BY created_at, id').all()
     ]);
     const leads = resultRows(leadsResult);
@@ -1077,7 +1078,7 @@ async function handlePost(request, env, path) {
         WHERE status IN ('sending', 'sent', 'uncertain')
           AND COALESCE(sent_at, started_at) > ?
         GROUP BY account_id
-      `).bind(new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString()).all(),
+      `).bind(new Date(Date.now() - SEND_WINDOW_MS).toISOString()).all(),
       db.prepare('SELECT id, name, subject, body FROM templates WHERE archived_at IS NULL ORDER BY created_at, id').all()
     ]);
     const leads = resultRows(leadsResult);
@@ -1486,8 +1487,8 @@ async function handlePost(request, env, path) {
 
     const now = new Date();
     const nowIso = now.toISOString();
-    const cutoff = new Date(now.getTime() - 24 * 60 * 60 * 1000).toISOString();
-    const currentDay = Math.floor((now.getTime() - Date.parse(campaign.created_at)) / (24 * 60 * 60 * 1000)) + 1;
+    const cutoff = new Date(now.getTime() - SEND_WINDOW_MS).toISOString();
+    const currentDay = Math.floor((now.getTime() - Date.parse(campaign.created_at)) / (SEND_WINDOW_MS)) + 1;
     const stale = await db.prepare(expireStaleDeliveriesSql)
       .bind(campaignId, new Date(now.getTime() - 2 * 60 * 1000).toISOString()).run();
     if(stale.meta?.changes){const remaining=await db.prepare("SELECT 1 FROM campaign_deliveries WHERE campaign_id=? AND status='queued' LIMIT 1").bind(campaignId).first();if(!remaining)return jsonResponse(200,{ok:true,done:true,needsReview:true});}
@@ -1540,7 +1541,7 @@ async function handlePost(request, env, path) {
 
       const nextDay = Number(nextQueued?.day_no || 0);
       const scheduledAt = nextDay > currentDay
-        ? new Date(Date.parse(campaign.created_at) + (nextDay - 1) * 24 * 60 * 60 * 1000).toISOString()
+        ? new Date(Date.parse(campaign.created_at) + (nextDay - 1) * SEND_WINDOW_MS).toISOString()
         : null;
       const retryAt = nextQueued?.retry_after && Date.parse(nextQueued.retry_after) > now.getTime()
         ? nextQueued.retry_after
@@ -1557,11 +1558,11 @@ async function handlePost(request, env, path) {
         sent: Number(campaign.sent_count || 0),
         nextSendAt,
         reason: scheduledAt
-          ? 'The next 24-hour sending window has not started yet.'
+          ? 'The next 10-hour sending window has not started yet.'
           : retryAt
             ? 'A temporary sender limit was reached. The background sender will retry after the displayed time.'
           : candidate.nextQuotaAt ? 'Sender quotas are full. Sending will resume automatically when rolling capacity returns.'
-          : 'No assigned sender has capacity right now. Resume after a sender’s rolling 24-hour limit resets.'
+          : 'No assigned sender has capacity right now. Resume after a sender’s rolling 10-hour limit resets.'
       });
     }
 

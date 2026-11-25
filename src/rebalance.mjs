@@ -1,3 +1,4 @@
+import { SEND_WINDOW_MS } from './send-window.mjs';
 import {senderQueueStatements} from './ready-senders.mjs';
 import {assignScoutingPlans} from './domain.mjs';
 export function planRebalancedQueue(queued,accounts,blocked=[],startDay=1){
@@ -20,7 +21,7 @@ export function planRebalancedQueue(queued,accounts,blocked=[],startDay=1){
 export async function rebalanceCampaign(db,campaignId){
  const campaign=await db.prepare('SELECT id,status,created_at,in_flight_count,uncertain_count FROM campaigns WHERE id=?').bind(campaignId).first();
  if(!campaign || !['User paused','Paused','Dry run'].includes(campaign.status) || campaign.in_flight_count || campaign.uncertain_count)throw new Error('Pause the campaign and resolve unconfirmed sends before using newly connected accounts.');
- const cutoff=new Date(Date.now()-86400000).toISOString();
+ const cutoff=new Date(Date.now()-SEND_WINDOW_MS).toISOString();
  const [queuedResult,accountsResult,blockedResult,templatesResult]=await Promise.all([
   db.prepare(`SELECT d.id,d.account_id,d.lead_id,d.template_id,d.created_at,d.attempt_count,d.retry_after,d.last_error,l.name,l.email,l.store FROM campaign_deliveries d JOIN leads l ON l.id=d.lead_id WHERE d.campaign_id=? AND d.status='queued' ORDER BY d.day_no,d.batch_no,d.id`).bind(campaignId).all(),
   db.prepare(`WITH used AS(SELECT account_id,COUNT(*) AS amount FROM campaign_deliveries WHERE status IN ('sent','sending','uncertain') AND COALESCE(sent_at,started_at)>? GROUP BY account_id)
@@ -30,7 +31,7 @@ export async function rebalanceCampaign(db,campaignId){
  ]);
  const queued=queuedResult.results || [],blocked=blockedResult.results || [];
  if(!queued.length)throw new Error('There are no queued emails to redistribute.');
- const day=Math.max(1,Math.floor((Date.now()-Date.parse(campaign.created_at))/86400000)+1);
+ const day=Math.max(1,Math.floor((Date.now()-Date.parse(campaign.created_at))/SEND_WINDOW_MS)+1);
  const plan=planRebalancedQueue(queued,accountsResult.results || [],blocked,day);
  const priorPlan=new Map();for(const row of [...blocked,...queued])if(row.template_id && !priorPlan.has(row.account_id))priorPlan.set(row.account_id,row.template_id);
  const groups=new Map();for(const row of plan){if(!groups.has(row.account_id))groups.set(row.account_id,[]);groups.get(row.account_id).push(row.lead_id);}

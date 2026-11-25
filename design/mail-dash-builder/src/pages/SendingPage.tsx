@@ -456,7 +456,7 @@ export const SendingPage: React.FC<SendingPageProps> = ({
         subtitle="Use the imported lead list and saved scouting plans."
       >
         <form onSubmit={handleCreateSend} className="space-y-4">
-          <p className="text-[13px] text-[var(--color-muted)]">Start sending to all eligible imported leads using active, connected senders and compatible scouting plans. Existing suppression rules and each sender’s rolling 24-hour cap apply. This starts real email delivery.</p>
+          <p className="text-[13px] text-[var(--color-muted)]">Start sending to all eligible imported leads using active, connected senders and compatible scouting plans. Existing suppression rules and each sender’s rolling 10-hour cap apply. This starts real email delivery.</p>
           <div className="pt-2 flex items-center justify-end gap-3">
             <button
               type="button"

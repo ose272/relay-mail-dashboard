@@ -13,7 +13,7 @@ test('send selection uses sender seeks and preserves quotas, retries, day gates 
  const lanes=await Promise.all(Array.from({length:10},(_,candidateOffset)=>selectNextDelivery(db,{cutoff,campaignId:'c',currentDay:1,nowIso:now,defaultCap:40,candidateOffset})));assert.equal(new Set(lanes.map(c=>c.id)).size,10);
  assert.equal((await choose()).id,'d0-0');s.exec("UPDATE campaign_deliveries SET status='sent',sent_at='2026-11-19T08:00:00.000Z' WHERE id='d0-0'");assert.equal((await choose()).id,'d1-0');
  s.exec("UPDATE accounts SET paused=1 WHERE id='a1'; UPDATE campaign_deliveries SET retry_after='2026-11-20T00:00:00.000Z' WHERE account_id='a2' AND day_no=1");assert.equal((await choose()).id,'d3-0');
- s.exec("UPDATE accounts SET cap=1 WHERE id='a0'; UPDATE accounts SET paused=1 WHERE id NOT IN ('a0','a1','a2')");assert.equal((await choose()).id,null);assert.equal((await choose()).nextQuotaAt,'2026-11-20T08:00:01.000Z');
+ s.exec("UPDATE accounts SET cap=1 WHERE id='a0'; UPDATE accounts SET paused=1 WHERE id NOT IN ('a0','a1','a2')");assert.equal((await choose()).id,null);assert.equal((await choose()).nextQuotaAt,'2026-11-19T18:00:01.000Z');
  const plan=s.prepare('EXPLAIN QUERY PLAN '+nextCandidatesSql).all('c','c',1,now).map(r=>r.detail).join('\n');assert.match(plan,/idx_delivery_sender_queue_seek/);assert.match(plan,/idx_delivery_campaign_sender_time/);assert.doesNotMatch(plan,/SCAN (?:usage|recent|d)\b/);
  console.log('Indexed selector query plan:\n'+plan);
  }finally{s.close();}

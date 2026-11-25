@@ -1,3 +1,4 @@
+import { SEND_WINDOW_MS } from './send-window.mjs';
 // Only definite, queued work can move. Sent, sending and uncertain records never do.
 export function planCapacityTransfers(queued,accounts,blocked=[],limit=200){
  const capacity=new Map(accounts.map(a=>[a.id,Math.max(0,Math.min(40,a.cap)-a.used)]));
@@ -12,14 +13,14 @@ export async function recoverWaitingCapacity(db,{campaignId,now=new Date()}={}){
  if(!campaign)return{moved:0,checked:false};
  const lease=await db.prepare("UPDATE campaigns SET capacity_checked_at=?,capacity_next_check_at=NULL WHERE id=? AND status IN('Sending','Scheduled') AND in_flight_count=0 AND pending_count>0 AND (capacity_checked_at IS NULL OR capacity_checked_at<=? OR capacity_next_check_at<=?)").bind(stamp,campaign.id,before,stamp).run();
  if(!lease.meta?.changes)return{moved:0,checked:false};
- const cutoff=new Date(now.getTime()-86400000).toISOString();
+ const cutoff=new Date(now.getTime()-SEND_WINDOW_MS).toISOString();
  // Expired quota caches are refreshed once, then get a new expiry (or NULL).
- await db.prepare(`UPDATE sender_budget SET used_count=(SELECT COUNT(*) FROM campaign_deliveries d INDEXED BY idx_delivery_sender_quota_time WHERE d.account_id=sender_budget.account_id AND d.status IN('sending','sent','uncertain') AND COALESCE(d.sent_at,d.started_at)>?),expires_at=(SELECT strftime('%Y-%m-%dT%H:%M:%fZ',COALESCE(d.sent_at,d.started_at),'+1 day') FROM campaign_deliveries d INDEXED BY idx_delivery_sender_quota_time WHERE d.account_id=sender_budget.account_id AND d.status IN('sending','sent','uncertain') AND COALESCE(d.sent_at,d.started_at)>? ORDER BY COALESCE(d.sent_at,d.started_at) LIMIT 1) WHERE expires_at<=?`).bind(cutoff,cutoff,stamp).run();
+ await db.prepare(`UPDATE sender_budget SET used_count=(SELECT COUNT(*) FROM campaign_deliveries d INDEXED BY idx_delivery_sender_quota_time WHERE d.account_id=sender_budget.account_id AND d.status IN('sending','sent','uncertain') AND COALESCE(d.sent_at,d.started_at)>?),expires_at=(SELECT strftime('%Y-%m-%dT%H:%M:%fZ',COALESCE(d.sent_at,d.started_at),'+10 hours') FROM campaign_deliveries d INDEXED BY idx_delivery_sender_quota_time WHERE d.account_id=sender_budget.account_id AND d.status IN('sending','sent','uncertain') AND COALESCE(d.sent_at,d.started_at)>? ORDER BY COALESCE(d.sent_at,d.started_at) LIMIT 1) WHERE expires_at<=?`).bind(cutoff,cutoff,stamp).run();
  const available=await db.prepare(`SELECT a.id,b.cap,b.used_count AS used FROM accounts a JOIN sender_budget b ON b.account_id=a.id WHERE a.paused=0 AND a.connection='Connected' AND a.smtp_verified_at IS NOT NULL AND a.credential_ciphertext IS NOT NULL AND (a.send_retry_after IS NULL OR a.send_retry_after<=?) AND b.used_count<b.cap AND NOT EXISTS(SELECT 1 FROM campaign_deliveries d WHERE d.account_id=a.id AND d.status='sending') ORDER BY b.used_count,a.created_at,a.id`).bind(stamp).all();
  const accounts=available.results||[];let moved=0;
  const alreadyReady=await db.prepare('SELECT 1 FROM sender_ready WHERE campaign_id=? AND enabled=1 AND next_delivery_id IS NOT NULL AND ready_at<=? LIMIT 1').bind(campaign.id,stamp).first();
  if(accounts.length&&!alreadyReady){
-  const ids=JSON.stringify(accounts.map(a=>a.id)),day=Math.max(1,Math.floor((now-Date.parse(campaign.created_at))/86400000)+1);
+  const ids=JSON.stringify(accounts.map(a=>a.id)),day=Math.max(1,Math.floor((now-Date.parse(campaign.created_at))/SEND_WINDOW_MS)+1);
   const [queued,blocked]=await Promise.all([
    db.prepare("SELECT id,account_id,lead_id FROM campaign_deliveries WHERE campaign_id=? AND status='queued' AND day_no<=? ORDER BY day_no,batch_no,id").bind(campaign.id,day).all(),
    db.prepare('SELECT account_id,lead_id FROM campaign_deliveries WHERE campaign_id=? AND account_id IN(SELECT value FROM json_each(?))').bind(campaign.id,ids).all()

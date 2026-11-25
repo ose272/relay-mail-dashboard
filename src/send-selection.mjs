@@ -1,3 +1,4 @@
+import { SEND_WINDOW_MS } from './send-window.mjs';
 import { SEND_CONCURRENCY } from './send-limits.mjs';
 
 export const nextCandidatesSql = `
@@ -55,7 +56,7 @@ export async function selectNextDelivery(db, {campaignId,currentDay,nowIso,cutof
  for(const c of candidates){
    const used=byAccount.get(c.account_id);
    if(Number(used?.used || 0)<Math.min(40,c.cap,defaultCap))return {id:c.id,nextQuotaAt:null};
-   if(used?.oldest)reset=Math.min(reset,Date.parse(used.oldest)+86400000+1000);
+   if(used?.oldest)reset=Math.min(reset,Date.parse(used.oldest)+SEND_WINDOW_MS+1000);
  }
  return {id:null,nextQuotaAt:Number.isFinite(reset)?new Date(reset).toISOString():null};
 }

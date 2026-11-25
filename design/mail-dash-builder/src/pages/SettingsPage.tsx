@@ -61,7 +61,7 @@ export function SettingsPage({ settings, onSaveSettings, theme, onSetTheme,onUsa
           </label>
 
           <label className="block text-[13px] font-medium">
-            Default cap per sender / rolling 24 hours
+            Default cap per sender / rolling 10 hours
             <input
               type="number"
               min="1"
