@@ -1,3 +1,4 @@
+import {customerAuth} from '../_lib/customer-auth.js';
 import {applyIncomingState,applySentState} from '../../src/thread-state.mjs';
 import {finishAttemptSql,reviewDeliveries} from '../../src/campaign-state.mjs';
 import {createPreparation,continuePreparation,continueNextPreparation,preparationProgress,PreparationError} from '../../src/campaign-preparation.mjs';
@@ -1889,6 +1890,7 @@ async function handleRequest({ request, env }) {
 
 export async function onRequest(context) {
  const {request,env}=context,url=new URL(request.url);
+ if(url.pathname.startsWith('/api/auth/'))return customerAuth(context);
  // Old browser timers must not cause even a usage-table lookup.
  if(request.method==='POST' && ['/api/mail/sync','/api/mail/conversation'].includes(url.pathname)){
    const body=await request.clone().json().catch(()=>({}));

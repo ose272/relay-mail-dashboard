@@ -1,5 +1,14 @@
 {
   "version": 1,
-  "include": ["/*"],
-  "exclude": []
+  "include": [
+    "/*"
+  ],
+  "exclude": [
+    "/assets/*",
+    "/customer-auth.css",
+    "/customer-auth.js",
+    "/login.js",
+    "/styles.css",
+    "/favicon.ico"
+  ]
 }

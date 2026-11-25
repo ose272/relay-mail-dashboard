@@ -11,3 +11,14 @@
   Cache-Control: no-store
 /login
   Cache-Control: no-store
+
+/signup
+  Cache-Control: no-store
+/signin
+  Cache-Control: no-store
+/welcome
+  Cache-Control: no-store
+/customer-auth.js
+  Cache-Control: no-cache
+/customer-auth.css
+  Cache-Control: no-cache

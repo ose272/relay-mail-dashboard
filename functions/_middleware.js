@@ -1,6 +1,7 @@
+import {readCustomerCookie} from './_lib/customer-auth.js';
 import { readSessionCookie, verifySession } from './_lib/auth.js';
 
-const publicPaths = new Set(['/login', '/login.html', '/login.js', '/styles.css', '/favicon.ico', '/track/open']);
+const publicPaths = new Set(['/login', '/login.html', '/login.js', '/styles.css', '/favicon.ico', '/track/open','/signup','/signup.html','/signin','/signin.html','/welcome','/welcome.html','/api/auth/config','/api/auth/signup','/api/auth/signin','/api/auth/session','/api/auth/signout']);
 const publicAssetPattern = /\.(?:css|js|mjs|map|ico|svg|png|jpe?g|webp|avif|woff2?|ttf)$/i;
 
 function jsonResponse(status, error) {
@@ -31,7 +32,7 @@ export async function onRequest({ request, env, next }) {
   const token = readSessionCookie(request);
   if (!await verifySession(token, env.DASHBOARD_PASSWORD)) {
     if (url.pathname.startsWith('/api/')) return jsonResponse(401, 'Please sign in.');
-    return Response.redirect(new URL('/login', url), 302);
+    return Response.redirect(new URL(readCustomerCookie(request)?'/welcome':'/signin', url), 302);
   }
   return next();
 }
