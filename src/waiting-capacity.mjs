@@ -10,7 +10,7 @@ export async function recoverWaitingCapacity(db,{campaignId,now=new Date()}={}){
  const stamp=now.toISOString(),before=new Date(now.getTime()-300000).toISOString();
  const campaign=await (campaignId?db.prepare('SELECT id,created_at FROM campaigns WHERE id=?'):db.prepare("SELECT id,created_at FROM campaigns WHERE name='Direct send' AND status IN('Sending','Scheduled') AND pending_count>0 ORDER BY created_at DESC LIMIT 1")).bind(...(campaignId?[campaignId]:[])).first();
  if(!campaign)return{moved:0,checked:false};
- const lease=await db.prepare("UPDATE campaigns SET capacity_checked_at=? WHERE id=? AND status IN('Sending','Scheduled') AND in_flight_count=0 AND pending_count>0 AND (capacity_checked_at IS NULL OR capacity_checked_at<=?)").bind(stamp,campaign.id,before).run();
+ const lease=await db.prepare("UPDATE campaigns SET capacity_checked_at=?,capacity_next_check_at=NULL WHERE id=? AND status IN('Sending','Scheduled') AND in_flight_count=0 AND pending_count>0 AND (capacity_checked_at IS NULL OR capacity_checked_at<=? OR capacity_next_check_at<=?)").bind(stamp,campaign.id,before,stamp).run();
  if(!lease.meta?.changes)return{moved:0,checked:false};
  const cutoff=new Date(now.getTime()-86400000).toISOString();
  // Expired quota caches are refreshed once, then get a new expiry (or NULL).
@@ -35,6 +35,14 @@ export async function recoverWaitingCapacity(db,{campaignId,now=new Date()}={}){
    ]);moved=Number(results[0].meta?.changes||0);
   }
  }
- await db.prepare(`UPDATE campaigns SET status=CASE WHEN EXISTS(SELECT 1 FROM sender_ready r WHERE r.campaign_id=campaigns.id AND r.enabled=1 AND r.next_delivery_id IS NOT NULL AND r.ready_at<=?) THEN 'Sending' ELSE 'Scheduled' END,next_send_at=(SELECT MIN(r.ready_at) FROM sender_ready r WHERE r.campaign_id=campaigns.id AND r.enabled=1 AND r.next_delivery_id IS NOT NULL),capacity_checked_at=CASE WHEN ?>0 THEN NULL ELSE capacity_checked_at END WHERE id=? AND status IN('Sending','Scheduled') AND in_flight_count=0`).bind(stamp,moved,campaign.id).run();
+ const [queuedState,capacityState]=await Promise.all([
+  db.prepare('SELECT MIN(ready_at) AS next_at,SUM(ready_at<=?) AS ready FROM sender_ready WHERE campaign_id=? AND enabled=1 AND next_delivery_id IS NOT NULL').bind(stamp,campaign.id).first(),
+  db.prepare(`WITH future AS(SELECT MAX(CASE WHEN b.used_count>=b.cap THEN COALESCE(b.expires_at,'9999-12-31T00:00:00.000Z') ELSE '0000' END,COALESCE(a.send_retry_after,'0000')) AS next_at FROM accounts a JOIN sender_budget b ON b.account_id=a.id WHERE a.paused=0 AND a.connection='Connected' AND a.smtp_verified_at IS NOT NULL AND a.credential_ciphertext IS NOT NULL) SELECT MIN(next_at) AS next_at FROM future WHERE next_at>? AND next_at<'9999'`).bind(stamp).first()
+ ]);
+ const earliest=values=>values.filter(Boolean).sort()[0]||null;
+ const ready=Number(queuedState?.ready||0)>0;
+ const nextAt=earliest([queuedState?.next_at,capacityState?.next_at]);
+ const nextCheck=moved?null:earliest([capacityState?.next_at,new Date(now.getTime()+300000).toISOString()]);
+ await db.prepare("UPDATE campaigns SET status=?,next_send_at=?,capacity_next_check_at=?,wait_reason=?,capacity_checked_at=CASE WHEN ?>0 THEN NULL ELSE capacity_checked_at END WHERE id=? AND status IN('Sending','Scheduled') AND in_flight_count=0").bind(ready?'Sending':'Scheduled',nextAt,nextCheck,ready?'':'sender_capacity',moved,campaign.id).run();
  return{moved,checked:true};
 }

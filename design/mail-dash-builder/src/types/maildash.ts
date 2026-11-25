@@ -29,6 +29,8 @@ export interface SendingState {
   backendStatus?: string;
   inFlight?: number;
   nextSendAt?: string;
+  waitReason?:string;
+  capacityNextCheckAt?:string;
   updatedAt?: number;
   status: 'paused' | 'running' | 'completed';
   runTitle: string;

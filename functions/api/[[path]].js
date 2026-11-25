@@ -266,7 +266,7 @@ async function loadState(db, options = {}) {
     db.prepare("SELECT COALESCE((SELECT total FROM lead_status_counts WHERE status='Ready'),0) AS active_count,COALESCE((SELECT total FROM lead_status_counts WHERE status='Archived'),0) AS archived_count").first(),
     db.prepare('SELECT id, name, subject, body, archived_at FROM templates ORDER BY created_at, id').all(),
     db.prepare(`SELECT id, name, template_id, status, created_at, remaining, days, allocation_json,
-      planned_sends, sent_count, pending_count, uncertain_count, failed_count, failure_codes,cancelled_count
+      planned_sends, sent_count, pending_count, uncertain_count, failed_count, failure_codes,cancelled_count,in_flight_count,next_send_at,wait_reason,capacity_next_check_at
       FROM campaigns ORDER BY created_at DESC`).all(),
     db.prepare(`SELECT thread_id, direction, body, time, send_state FROM messages
       WHERE direction = 'in' AND time >= ?
@@ -384,6 +384,7 @@ async function loadState(db, options = {}) {
         uncertain: Number(campaign.uncertain_count || 0),
         failed: Number(campaign.failed_count || 0),
         cancelled:Number(campaign.cancelled_count || 0),
+        inFlight:Number(campaign.in_flight_count || 0),nextSendAt:campaign.next_send_at,waitReason:campaign.wait_reason,capacityNextCheckAt:campaign.capacity_next_check_at,
         failureCodes: String(campaign.failure_codes || '').split(',').filter(Boolean)
       };
     }),
@@ -408,7 +409,7 @@ async function loadState(db, options = {}) {
 async function loadSendingStatus(db, summary = false) {
   const result = await db.prepare(`
     SELECT id, status, created_at, planned_sends, sent_count, pending_count,
-      uncertain_count, failed_count, failure_codes,cancelled_count, in_flight_count, next_send_at,p.phase AS prep_phase,p.total_count AS prep_total,p.prepared_count,p.total_senders,p.prepared_senders,p.error_code
+      uncertain_count, failed_count, failure_codes,cancelled_count, in_flight_count, next_send_at,wait_reason,capacity_next_check_at,p.phase AS prep_phase,p.total_count AS prep_total,p.prepared_count,p.total_senders,p.prepared_senders,p.error_code
     FROM campaigns LEFT JOIN campaign_preparations p ON p.campaign_id=campaigns.id
     WHERE name = 'Direct send'
     ORDER BY created_at DESC
@@ -426,6 +427,8 @@ async function loadSendingStatus(db, summary = false) {
     cancelled:Number(run.cancelled_count || 0),
     inFlight: Number(run.in_flight_count || 0),
     nextSendAt: run.next_send_at,
+    waitReason:run.wait_reason,
+    capacityNextCheckAt:run.capacity_next_check_at,
     failureCodes: String(run.failure_codes || '').split(',').filter(Boolean),
     preparation:run.status==='Preparing'?{phase:run.prep_phase || 'legacy',total:Number(run.prep_total || run.planned_sends || 0),prepared:Number(run.prepared_count || 0),senders:Number(run.total_senders || 0),readySenders:Number(run.prepared_senders || 0),error:run.error_code || (!run.prep_phase?'LEGACY_PREPARATION_REVIEW':null)}:undefined,
     liveReady: true
@@ -1904,7 +1907,7 @@ export async function onRequest(context) {
  const usageSnapshot={day,resetAt,tier:env.APP_USAGE_TIER==='paid'?'paid':'free',reads:Number(initial.rows_read||0),writes:Number(initial.rows_written||0),readLimit:budgets.reads,writeLimit:budgets.writes,sendingHeld:initial.rows_read>=budgets.reads||initial.rows_written>=budgets.writes};
  if((initial.rows_read>=budgets.reads || initial.rows_written>=budgets.writes) && !allowBudgetRead(env,request.method,url.pathname)){
    if(url.pathname==='/api/internal/send-tick'){
-     await env.DB.prepare(`UPDATE campaigns SET status='Scheduled',next_send_at=? WHERE name='Direct send'
+     await env.DB.prepare(`UPDATE campaigns SET status='Scheduled',next_send_at=?,wait_reason='application_budget' WHERE name='Direct send'
        AND status IN ('Sending','Scheduled','Paused') AND (next_send_at IS NULL OR next_send_at<?)`)
        .bind(resetAt,resetAt).run().catch(()=>{});
    }
