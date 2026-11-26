@@ -13,7 +13,7 @@ function jsonResponse(status, error) {
 
 export async function onRequest({ request, env, next }) {
   const url = new URL(request.url);
-  if (['/about','/about.html'].includes(url.pathname)) return next();
+  if (['/about','/about.html','/googleae5c9c582107a548.html','/googleae5c9c582107a548'].includes(url.pathname)) return next();
   if (
     publicPaths.has(url.pathname) || url.pathname.startsWith('/track/open/') || url.pathname.startsWith('/track/click/') ||
     (!url.pathname.startsWith('/api/') && publicAssetPattern.test(url.pathname)) ||
