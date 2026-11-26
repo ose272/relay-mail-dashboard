@@ -1,4 +1,5 @@
 import { SEND_WINDOW_MS } from '../../src/send-window.mjs';
+import {workspaceActivity} from '../_lib/workspace-data.js';
 import {customerAuth} from '../_lib/customer-auth.js';
 import {applyIncomingState,applySentState} from '../../src/thread-state.mjs';
 import {finishAttemptSql,reviewDeliveries} from '../../src/campaign-state.mjs';
@@ -259,14 +260,14 @@ async function loadState(db, options = {}) {
     db.prepare(`
       SELECT id, email, cap,
         (SELECT COUNT(*) FROM campaign_deliveries d WHERE d.account_id = accounts.id AND d.status = 'sent' AND d.sent_at >= ?) AS used,
-        paused, connection, imap_verified_at, smtp_verified_at,
+        paused, connection, send_retry_after, imap_verified_at, smtp_verified_at,
         last_sync_at, credential_ciphertext, health_status, health_checked_at, health_code, health_message
       FROM accounts ORDER BY created_at, email
     `).bind(new Date(Date.now() - SEND_WINDOW_MS).toISOString()).all(),
     db.prepare(`SELECT id, email, name, store, status, created_at FROM leads
       WHERE status = ? ${cursorSql} ORDER BY created_at, email, id LIMIT ?`).bind(...leadBindings).all(),
     db.prepare("SELECT COALESCE((SELECT total FROM lead_status_counts WHERE status='Ready'),0) AS active_count,COALESCE((SELECT total FROM lead_status_counts WHERE status='Archived'),0) AS archived_count").first(),
-    db.prepare('SELECT id, name, subject, body, archived_at FROM templates ORDER BY created_at, id').all(),
+    db.prepare('SELECT id, name, subject, body, description, archived_at FROM templates ORDER BY created_at, id').all(),
     db.prepare(`SELECT id, name, template_id, status, created_at, remaining, days, allocation_json,
       planned_sends, sent_count, pending_count, uncertain_count, failed_count, failure_codes,cancelled_count,in_flight_count,next_send_at,wait_reason,capacity_next_check_at
       FROM campaigns ORDER BY created_at DESC`).all(),
@@ -305,6 +306,7 @@ async function loadState(db, options = {}) {
   }
   return {
     workspaceName: (await db.prepare("SELECT value FROM app_settings WHERE key = 'workspaceName'").first())?.value || 'Relay Mail',
+    profileName: (await db.prepare("SELECT value FROM app_settings WHERE key = 'profileName'").first())?.value || 'Workspace owner',
     cap: Number(settingsResult?.value || 40),
     openTracking: openTrackingResult?.value === '1',
     planOpenTracking: planOpenTrackingResult?.value === '1',
@@ -317,6 +319,7 @@ async function loadState(db, options = {}) {
       used: account.used,
       paused: Boolean(account.paused),
       connection: account.connection,
+      retryAfter: account.send_retry_after,
       imapVerifiedAt: account.imap_verified_at,
       smtpVerifiedAt: account.smtp_verified_at,
       lastSyncAt: account.last_sync_at,
@@ -688,6 +691,7 @@ async function handlePost(request, env, path) {
     const name = typeof body.name === 'string' ? body.name.trim() : '';
     const subject = typeof body.subject === 'string' ? body.subject.trim() : '';
     const message = typeof body.body === 'string' ? body.body : '';
+    const description=typeof body.description==='string'?body.description.trim().slice(0,500):null;
     if (!name || !message.trim()) throw new HttpError(400, 'Enter a plan name and message body.');
     if (/{{\s*(?!name\s*}}|store\s*}}|email\s*}})[^}]+}}/.test(message + subject)) {
       throw new HttpError(400, 'Use only {{name}}, {{store}} or {{email}}.');
@@ -697,13 +701,13 @@ async function handlePost(request, env, path) {
       if (!id || !await db.prepare('SELECT id FROM templates WHERE id = ?').bind(id).first()) {
         throw new HttpError(404, 'Scouting plan not found.');
       }
-      await db.prepare('UPDATE templates SET name = ?, subject = ?, body = ? WHERE id = ?')
-        .bind(name, subject, message, id).run();
+      await db.prepare('UPDATE templates SET name = ?, subject = ?, body = ?, description=COALESCE(?,description) WHERE id = ?')
+        .bind(name, subject, message, description, id).run();
       return jsonResponse(200, { ok: true });
     }
     const id = crypto.randomUUID();
-    await db.prepare('INSERT INTO templates (id, name, subject, body, created_at) VALUES (?, ?, ?, ?, ?)')
-      .bind(id, name, subject, message, new Date().toISOString()).run();
+    await db.prepare('INSERT INTO templates (id, name, subject, body, description, created_at) VALUES (?, ?, ?, ?, ?, ?)')
+      .bind(id, name, subject, message, description||'', new Date().toISOString()).run();
     return jsonResponse(200, { ok: true, id });
   }
 
@@ -833,8 +837,14 @@ async function handlePost(request, env, path) {
     });
   }
 
+  if(path==='/api/account/disconnect'){
+    const id=typeof body.id==='string'?body.id:'';
+    const result=await db.prepare("UPDATE accounts SET paused=1,credential_ciphertext=NULL,connection='Not connected',imap_verified_at=NULL,smtp_verified_at=NULL WHERE id=?").bind(id).run();
+    if(!result.meta?.changes)throw new HttpError(404,'Sender account not found.');
+    return jsonResponse(200,{ok:true});
+  }
   if (path === '/api/account') {
-    const result = await db.prepare('UPDATE accounts SET paused = CASE paused WHEN 1 THEN 0 ELSE 1 END WHERE id = ?').bind(body.id).run();
+    const result = await (typeof body.paused==='boolean' ? db.prepare('UPDATE accounts SET paused=? WHERE id=?').bind(body.paused?1:0,body.id) : db.prepare('UPDATE accounts SET paused = CASE paused WHEN 1 THEN 0 ELSE 1 END WHERE id = ?').bind(body.id)).run();
     if (!result.meta?.changes) throw new HttpError(404, 'Account not found.');
     return jsonResponse(200, { ok: true });
   }
@@ -956,6 +966,7 @@ async function handlePost(request, env, path) {
     await db.batch([
       ...(healthEmail !== undefined ? [db.prepare("INSERT INTO app_settings (key, value) VALUES ('healthNotificationEmail', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value").bind(healthEmail)] : []),
       ...(typeof body.workspaceName === 'string' ? [db.prepare("INSERT INTO app_settings (key, value) VALUES ('workspaceName', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value").bind(body.workspaceName.trim().slice(0, 100) || 'Relay Mail')] : []),
+      ...(typeof body.profileName==='string'?[db.prepare("INSERT INTO app_settings(key,value) VALUES('profileName',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value").bind(body.profileName.trim().slice(0,100)||'Workspace owner')]:[]),
       ...(body.openTracking !== undefined ? [db.prepare("INSERT INTO app_settings (key, value) VALUES ('openTracking', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value").bind(body.openTracking ? '1' : '0')] : []),
       ...(body.linkTracking !== undefined ? [db.prepare("INSERT INTO app_settings(key,value) VALUES('linkTracking',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value").bind(body.linkTracking?'1':'0')] : []),
       ...(body.planOpenTracking !== undefined ? [db.prepare("INSERT INTO app_settings (key, value) VALUES ('planOpenTracking', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value").bind(body.planOpenTracking ? '1' : '0')] : []),
@@ -1824,6 +1835,7 @@ async function handleRequest({ request, env }) {
   const path = url.pathname;
   try {
     if(request.method==='GET' && path==='/api/usage')return jsonResponse(200,env.USAGE_SNAPSHOT);
+    if(request.method==='GET' && path==='/api/workspace/activity')return jsonResponse(200,await workspaceActivity(env.DB,{days:Number(url.searchParams.get('days'))}));
     if(request.method==='GET' && path==='/api/analytics')return jsonResponse(200,await loadEngagementAnalytics(env.DB,{campaignId:url.searchParams.get('campaignId'),all:url.searchParams.get('scope')==='all',configured:Boolean(env.OPEN_TRACKING_SECRET)}));
     if (request.method === 'GET' && path === '/api/state') return jsonResponse(200, await loadState(env.DB, {
       leadScope: url.searchParams.get('leadScope'),

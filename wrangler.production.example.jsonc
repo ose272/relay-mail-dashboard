@@ -4,6 +4,7 @@
   "compatibility_date": "2026-11-16",
   "compatibility_flags": ["nodejs_compat"],
   "pages_build_output_dir": "./public",
+  "vars": {"APP_USAGE_TIER":"paid","GOOGLE_OAUTH_ORIGIN":"https://sendar.com.de","ADMIN_LOGIN_DISABLED":"1","REGISTRATION_OPEN":"1"},
   "d1_databases": [
     {
       "binding": "DB",

@@ -54,7 +54,7 @@ export function meteredD1(raw, initial = {rows_read: 0, rows_written: 0}, budget
 }
 
 // Paid D1 has monthly inclusions; keep the dashboard readable during an application send hold.
-export function allowBudgetRead(env,method,path){return (method==='GET' && path==='/api/usage') || env.APP_USAGE_TIER==='paid' && method==='GET' && ['/api/analytics','/api/state','/api/sending/status','/api/notifications','/api/thread'].includes(path);}
+export function allowBudgetRead(env,method,path){return (method==='GET' && path==='/api/usage') || env.APP_USAGE_TIER==='paid' && method==='GET' && ['/api/workspace/activity','/api/analytics','/api/state','/api/sending/status','/api/notifications','/api/thread'].includes(path);}
 
 // Inbox operations have a small reserve; campaign sending retains its original guard.
 export function requestUsageBudgets(env,method,path){const base=usageBudgets(env);return env.APP_USAGE_TIER==='paid' && method==='POST' && ['/api/settings/features','/api/mail/sync','/api/mail/conversation','/api/thread/update','/api/read'].includes(path)?{...base,writes:base.writes+50000}:base;}

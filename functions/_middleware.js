@@ -13,7 +13,12 @@ function jsonResponse(status, error) {
 
 export async function onRequest({ request, env, next }) {
   const url = new URL(request.url);
-  if (['/sendar/design','/sendar/signin','/sendar/signup','/sendar/welcome','/sendar/about'].includes(url.pathname.replace(/\/$/,''))) return next();
+  // OAuth endpoints validate the customer session themselves. Owner cookies never authorize them.
+  if(url.pathname.startsWith('/api/oauth/google/'))return next();
+  if(['GET','HEAD'].includes(request.method)&&url.pathname.replace(/\/$/,'')==='/sendar/signin'&&url.searchParams.get('access')==='administrator')return Response.redirect(new URL('/sendar/signin',url),302);
+  const legacy={'/':'/sendar/','/index.html':'/sendar/','/login':'/sendar/signin','/login.html':'/sendar/signin','/signin':'/sendar/signin','/signin.html':'/sendar/signin','/signup':'/sendar/signup','/signup.html':'/sendar/signup','/welcome':'/sendar/welcome','/welcome.html':'/sendar/welcome','/about':'/sendar/about','/about.html':'/sendar/about','/sendar/design':'/sendar/','/sendar/design/':'/sendar/'};
+  if(['GET','HEAD'].includes(request.method)&&legacy[url.pathname])return Response.redirect(new URL(legacy[url.pathname],url),302);
+  if (['/sendar/signin','/sendar/signup','/sendar/welcome','/sendar/about'].includes(url.pathname.replace(/\/$/,''))) return next();
   if (['/about','/about.html','/googleae5c9c582107a548.html','/googleae5c9c582107a548'].includes(url.pathname)) return next();
   if (
     publicPaths.has(url.pathname) || url.pathname.startsWith('/track/open/') || url.pathname.startsWith('/track/click/') ||
@@ -26,6 +31,11 @@ export async function onRequest({ request, env, next }) {
     request.headers.get('Authorization') === `Bearer ${env.BACKGROUND_CRON_SECRET}`
   ) return next();
 
+  if(env.ADMIN_LOGIN_DISABLED==='1'){
+    if(url.pathname.startsWith('/api/'))return jsonResponse(401,'Administrator access is disabled. Sign in with your Sendar account.');
+    return Response.redirect(new URL(readCustomerCookie(request)?'/sendar/welcome':'/sendar/signin',url),302);
+  }
+
   if (!env.DASHBOARD_PASSWORD || env.DASHBOARD_PASSWORD.length < 10 || !env.DB) {
     if (url.pathname.startsWith('/api/')) return jsonResponse(503, 'Dashboard setup is incomplete.');
     return new Response('Dashboard setup is incomplete. Set the Pages secrets and D1 binding, then redeploy.', { status: 503 });
@@ -34,7 +44,7 @@ export async function onRequest({ request, env, next }) {
   const token = readSessionCookie(request);
   if (!await verifySession(token, env.DASHBOARD_PASSWORD)) {
     if (url.pathname.startsWith('/api/')) return jsonResponse(401, 'Please sign in.');
-    const destination=url.pathname.startsWith('/sendar')?(readCustomerCookie(request)?'/sendar/welcome':'/sendar/signin?access=administrator'):(readCustomerCookie(request)?'/welcome':'/signin');
+    const destination=url.pathname.startsWith('/sendar')?(readCustomerCookie(request)?'/sendar/welcome':'/sendar/signin'):(readCustomerCookie(request)?'/welcome':'/signin');
     return Response.redirect(new URL(destination, url), 302);
   }
   return next();

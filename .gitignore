@@ -36,3 +36,6 @@ public/src/
 design/mail-dash-builder/src/assets/
 .quota-fix-stage/
 .quota-fix-stage-2/
+
+# Google OAuth credential downloads must never enter source control.
+client_secret*.json

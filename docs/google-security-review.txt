@@ -1,0 +1,18 @@
+Property: https://relay-mail-dashboard-9uo.pages.dev/
+Reported category: Deceptive pages
+Reported example: https://relay-mail-dashboard-9uo.pages.dev/login
+
+Review request text (submit after verifying the deployed changes):
+
+Please review the deceptive-pages classification for our independently operated Sendar email workspace. We investigated the reported example /login and replaced the legacy administrator sign-in experience. That URL now redirects to our clearly branded Sendar account sign-in page.
+
+We disabled the legacy administrator login endpoint and administrator-session access in production. The public sign-in and registration pages now offer Sendar accounts only. They explicitly state that Sendar is independent of Google and that users must never enter their Google or Gmail password. Registration uses a separate Sendar password. Google mailbox OAuth connection is not yet enabled for public users.
+
+The obsolete demo preview and its generated bundles have been removed from the current release. We verified same-origin entry-page redirects, the deployed application bundle, and the login restriction. Our pages use HTTPS, a Content Security Policy, and anti-framing protections. Our Google site-verification file remains available.
+
+Please re-evaluate the updated reported page and the site. We have not determined Google's original detection mechanism, and we are requesting assessment of the deployed changes rather than asserting that the original classification was necessarily a false positive.
+
+Submission location:
+https://search.google.com/search-console/security-issues?resource_id=https%3A%2F%2Frelay-mail-dashboard-9uo.pages.dev%2F
+
+Sign in with the Google account that owns the verified property. Open the Deceptive pages issue, review any current example URLs, and select Request review after confirming the fixes. Paste the review text above. This document is a prepared draft, not evidence that a review has been submitted or approved.

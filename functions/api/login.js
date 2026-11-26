@@ -16,6 +16,7 @@ async function readJson(request) {
 }
 
 export async function onRequestPost({ request, env }) {
+  if(env.ADMIN_LOGIN_DISABLED==='1')return jsonResponse(410,{error:'Administrator login is disabled. Use your Sendar account to sign in.'});
   const origin = request.headers.get('Origin');
   if (!origin || origin !== new URL(request.url).origin) return jsonResponse(403, { error: 'Cross-origin request blocked.' });
   if (!request.headers.get('Content-Type')?.startsWith('application/json')) return jsonResponse(415, { error: 'JSON required.' });
