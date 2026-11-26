@@ -1,4 +1,5 @@
 import { SEND_WINDOW_MS } from './send-window.mjs';
+import {advanceQueuedCapacity} from './advance-queued-capacity.mjs';
 // Only definite, queued work can move. Sent, sending and uncertain records never do.
 export function planCapacityTransfers(queued,accounts,blocked=[],limit=200){
  const capacity=new Map(accounts.map(a=>[a.id,Math.max(0,Math.min(40,a.cap)-a.used)]));
@@ -17,8 +18,13 @@ export async function recoverWaitingCapacity(db,{campaignId,now=new Date()}={}){
  // Expired quota caches are refreshed once, then get a new expiry (or NULL).
  await db.prepare(`UPDATE sender_budget SET used_count=(SELECT COUNT(*) FROM campaign_deliveries d INDEXED BY idx_delivery_sender_quota_time WHERE d.account_id=sender_budget.account_id AND d.status IN('sending','sent','uncertain') AND COALESCE(d.sent_at,d.started_at)>?),expires_at=(SELECT strftime('%Y-%m-%dT%H:%M:%fZ',COALESCE(d.sent_at,d.started_at),'+10 hours') FROM campaign_deliveries d INDEXED BY idx_delivery_sender_quota_time WHERE d.account_id=sender_budget.account_id AND d.status IN('sending','sent','uncertain') AND COALESCE(d.sent_at,d.started_at)>? ORDER BY COALESCE(d.sent_at,d.started_at) LIMIT 1) WHERE expires_at<=?`).bind(cutoff,cutoff,stamp).run();
  const available=await db.prepare(`SELECT a.id,b.cap,b.used_count AS used FROM accounts a JOIN sender_budget b ON b.account_id=a.id WHERE a.paused=0 AND a.connection='Connected' AND a.smtp_verified_at IS NOT NULL AND a.credential_ciphertext IS NOT NULL AND (a.send_retry_after IS NULL OR a.send_retry_after<=?) AND b.used_count<b.cap AND NOT EXISTS(SELECT 1 FROM campaign_deliveries d WHERE d.account_id=a.id AND d.status='sending') ORDER BY b.used_count,a.created_at,a.id`).bind(stamp).all();
- const accounts=available.results||[];let moved=0;
- const alreadyReady=await db.prepare('SELECT 1 FROM sender_ready WHERE campaign_id=? AND enabled=1 AND next_delivery_id IS NOT NULL AND ready_at<=? LIMIT 1').bind(campaign.id,stamp).first();
+ const accounts=available.results||[];let moved=0,advanced=0;
+ let alreadyReady=await db.prepare('SELECT 1 FROM sender_ready WHERE campaign_id=? AND enabled=1 AND next_delivery_id IS NOT NULL AND ready_at<=? LIMIT 1').bind(campaign.id,stamp).first();
+ if(accounts.length&&!alreadyReady){
+  const day=Math.max(1,Math.floor((now-Date.parse(campaign.created_at))/SEND_WINDOW_MS)+1);
+  advanced=await advanceQueuedCapacity(db,{campaignId:campaign.id,day,stamp});
+  if(advanced)alreadyReady=true;
+ }
  if(accounts.length&&!alreadyReady){
   const ids=JSON.stringify(accounts.map(a=>a.id)),day=Math.max(1,Math.floor((now-Date.parse(campaign.created_at))/SEND_WINDOW_MS)+1);
   const [queued,blocked]=await Promise.all([
@@ -43,7 +49,8 @@ export async function recoverWaitingCapacity(db,{campaignId,now=new Date()}={}){
  const earliest=values=>values.filter(Boolean).sort()[0]||null;
  const ready=Number(queuedState?.ready||0)>0;
  const nextAt=earliest([queuedState?.next_at,capacityState?.next_at]);
- const nextCheck=moved?null:earliest([capacityState?.next_at,new Date(now.getTime()+300000).toISOString()]);
- await db.prepare("UPDATE campaigns SET status=?,next_send_at=?,capacity_next_check_at=?,wait_reason=?,capacity_checked_at=CASE WHEN ?>0 THEN NULL ELSE capacity_checked_at END WHERE id=? AND status IN('Sending','Scheduled') AND in_flight_count=0").bind(ready?'Sending':'Scheduled',nextAt,nextCheck,ready?'':'sender_capacity',moved,campaign.id).run();
- return{moved,checked:true};
+ const changed=moved+advanced;
+ const nextCheck=changed?null:earliest([capacityState?.next_at,new Date(now.getTime()+300000).toISOString()]);
+ await db.prepare("UPDATE campaigns SET status=?,next_send_at=?,capacity_next_check_at=?,wait_reason=?,capacity_checked_at=CASE WHEN ?>0 THEN NULL ELSE capacity_checked_at END WHERE id=? AND status IN('Sending','Scheduled') AND in_flight_count=0").bind(ready?'Sending':'Scheduled',nextAt,nextCheck,ready?'':'sender_capacity',changed,campaign.id).run();
+ return{moved,advanced,checked:true};
 }

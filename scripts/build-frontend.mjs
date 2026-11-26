@@ -14,5 +14,5 @@ await mkdir(path.join(release,'assets'),{recursive:true});
 await writeFile(path.join(release,'index.html'),html);
 const assets=[...html.matchAll(/(?:src|href)="(\/assets\/[^"]+)"/g)].map(m=>m[1]);
 for(const asset of assets)await cp(path.join(frontend,'dist',asset),path.join(release,asset));
-for(const file of ['login.html','login.js','styles.css','signup.html','signin.html','welcome.html','customer-auth.js','customer-auth.css','_headers','_routes.json'])await cp(path.join(root,'public',file),path.join(release,file));
+for(const file of ['about.html','login.html','login.js','styles.css','signup.html','signin.html','welcome.html','customer-auth.js','customer-auth.css','_headers','_routes.json'])await cp(path.join(root,'public',file),path.join(release,file));
 console.log('React production build copied to public; Pages Functions remain in functions/.');
