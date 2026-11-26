@@ -14,6 +14,8 @@ test('a customer cookie cannot gain owner workspace or mail API access through t
 test('Sendar SPA fallback serves only known GET pages with private caching and no external scripts',async()=>{
  let requested='';const mock={ASSETS:{fetch:async r=>{requested=r.url;return new Response('<h1>Sendar</h1>');}}};
  const r=await page({request:new Request('https://mail.invalid/sendar/signin'),env:mock});assert.equal(requested,'https://mail.invalid/sendar/');assert.equal(r.headers.get('Cache-Control'),'no-store');assert.match(r.headers.get('Content-Security-Policy'),/script-src 'self'/);
+ assert.equal(r.headers.get('X-Frame-Options'),'DENY');assert.match(r.headers.get('Content-Security-Policy'),/frame-ancestors 'none'/);
+ const design=await page({request:new Request('https://mail.invalid/sendar/design?frame=1'),env:mock});assert.equal(design.headers.get('X-Frame-Options'),'SAMEORIGIN');assert.match(design.headers.get('Content-Security-Policy'),/frame-ancestors 'self'/);
  assert.equal((await page({request:new Request('https://mail.invalid/sendar/not-a-page'),env:mock})).status,404);
  assert.equal((await page({request:new Request('https://mail.invalid/sendar/signin',{method:'POST'}),env:mock})).status,405);
 });

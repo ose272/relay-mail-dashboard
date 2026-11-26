@@ -3,6 +3,11 @@
 The uploaded `src/App.tsx` and `src/index.css` are now restored byte-for-byte.
 The custom dashboard shell is no longer rendered. `/sendar/design` directly
 previews the original, explicitly labelled demo without mailbox API calls.
+Desktop and Mobile controls live outside the uploaded interface. The preview
+defaults to a 1440px desktop iframe, with a 390px mobile option and a responsive
+option; narrow browser panes can therefore show either original layout. Only
+the public design route allows same-origin framing. Private and sign-in pages
+remain protected against framing.
 Its original sample data and browser-local actions are design-only. The existing
 production dashboard remains available while this exact design is connected.
 The account pages were not in the ZIP and remain a separate implementation.

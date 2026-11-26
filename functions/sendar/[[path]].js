@@ -8,5 +8,8 @@ export async function onRequest({request,env}) {
  const asset=new URL('/sendar/',request.url);
  const response=await env.ASSETS.fetch(new Request(asset,{method:request.method}));
  const headers=new Headers(response.headers);headers.set('Cache-Control','no-store');headers.set('X-Content-Type-Options','nosniff');headers.set('X-Frame-Options','DENY');headers.set('Strict-Transport-Security','max-age=31536000');headers.set('Content-Security-Policy',"default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; img-src 'self' data:; font-src 'self' https://fonts.gstatic.com; connect-src 'self'; frame-ancestors 'none'; form-action 'self'; base-uri 'self'; object-src 'none'");
+ // Only the public, demo-only design can appear in our same-origin viewport
+ // preview. Login pages and the owner workspace retain frame-ancestors 'none'.
+ if(path==='/sendar/design'){headers.set('X-Frame-Options','SAMEORIGIN');headers.set('Content-Security-Policy',headers.get('Content-Security-Policy').replace("frame-ancestors 'none'","frame-ancestors 'self'"));}
  return new Response(response.body,{status:response.status,headers});
 }
