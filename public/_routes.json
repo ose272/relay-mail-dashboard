@@ -4,6 +4,7 @@
     "/*"
   ],
   "exclude": [
+    "/googleae5c9c582107a548.html",
     "/assets/*",
     "/customer-auth.css",
     "/customer-auth.js",
