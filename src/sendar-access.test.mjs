@@ -3,7 +3,7 @@ import {onRequest as middleware} from '../functions/_middleware.js';
 import {onRequest as page} from '../functions/sendar/[[path]].js';
 const env={DB:{},DASHBOARD_PASSWORD:'local-only-owner-password'};
 test('Sendar customer pages are public while anonymous owner workspace access goes to owner sign-in',async()=>{
- for(const route of ['signin','signup','welcome','about']){const r=await middleware({request:new Request('https://mail.invalid/sendar/'+route),env:{},next:()=>new Response('PUBLIC ACCOUNT UI')});assert.equal(await r.text(),'PUBLIC ACCOUNT UI');}
+ for(const route of ['design','signin','signup','welcome','about']){const r=await middleware({request:new Request('https://mail.invalid/sendar/'+route),env:{},next:()=>new Response('PUBLIC ACCOUNT UI')});assert.equal(await r.text(),'PUBLIC ACCOUNT UI');}
  const r=await middleware({request:new Request('https://mail.invalid/sendar/'),env,next:()=>new Response('PRIVATE')});assert.equal(r.status,302);assert.equal(r.headers.get('Location'),'https://mail.invalid/sendar/signin?access=administrator');
 });
 test('a customer cookie cannot gain owner workspace or mail API access through the Sendar path',async()=>{

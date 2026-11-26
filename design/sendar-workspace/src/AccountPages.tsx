@@ -1,6 +1,8 @@
 import {useEffect,useState,type FormEvent} from 'react';
 import {ArrowRight,Check,Mail,ShieldCheck,CreditCard,LogOut,ArrowLeft} from 'lucide-react';
 import {SendarLogo} from './components/SendarShell';
+import './account-theme.css';
+import './sendar.css';
 type Profile={user:{name:string;email:string};workspace:{name:string;status:string}};
 async function accountRequest(path:string,body?:unknown){const r=await fetch('/api/'+path,{credentials:'same-origin',cache:'no-store',...(body===undefined?{}:{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)})});const data=await r.json();if(!r.ok)throw new Error(data.error||'The request could not be completed.');return data;}
 function AuthFrame({children}:{children:React.ReactNode}){return <main className="sendar-auth"><aside className="sendar-auth-story"><a href="/sendar/signin" aria-label="Sendar"><SendarLogo/></a><div className="sendar-auth-story-content"><span className="text-[11px] uppercase tracking-[2px] font-semibold text-[#1237e8]">A clearer way to connect</span><h1 className="mt-6">Every conversation.<br/>A little closer.</h1><p>A thoughtful workspace for your outreach, your people, and the conversations that come next.</p><div className="mt-8 flex items-center gap-3 text-[12px] text-slate-600"><ShieldCheck size={17} className="text-[#1237e8]"/><span>Your workspace. Your connections.</span></div></div><small>Sendar is an independent service, not affiliated with Google.</small></aside><section className="sendar-auth-form-side"><div className="sendar-auth-card"><div className="sendar-auth-mobile-brand"><SendarLogo/></div>{children}</div></section></main>;}

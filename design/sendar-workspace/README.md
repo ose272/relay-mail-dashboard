@@ -1,4 +1,14 @@
-# Sendar frontend
+# Sendar original-design candidate
+
+The uploaded `src/App.tsx` and `src/index.css` are now restored byte-for-byte.
+The custom dashboard shell is no longer rendered. `/sendar/design` directly
+previews the original, explicitly labelled demo without mailbox API calls.
+Its original sample data and browser-local actions are design-only. The existing
+production dashboard remains available while this exact design is connected.
+The account pages were not in the ZIP and remain a separate implementation.
+
+The following notes describe the prior integration candidate, retained in Git
+for the next wiring step; they do not claim the restored prototype is live mail.
 
 Separate release candidate for the supplied Sendar SaaS Workspace design and logo.
 The interface uses the existing authenticated backend; prototype campaigns,

@@ -1,315 +1,238 @@
-import {SendarShell} from './components/SendarShell';
-import {TrackingAnalytics} from './components/TrackingAnalytics';
-import type {FeatureFlags} from './components/FeatureControls';
-import {NotificationsPage} from './pages/NotificationsPage';
-import {runSyncPool} from './lib/sync-pool';
 import { useCallback, useEffect, useRef, useState } from 'react';
-import type { ConnectedAccount, InboxThread, Lead, LeadBatch, NavPage, ScoutingPlan, WorkspaceProfile, WorkspaceSettings, ThreadTag } from './types/maildash';
-import { api, ApiError, importWithProgress, type ImportProgress, csv, emptySending, mapAccount, mapLead, mapPlan, mapSending, mapThread } from './lib/api';
-import { Sidebar } from './components/layout/Sidebar';
-import { TopBar } from './components/layout/TopBar';
-import { OverviewPage as DashboardPage } from './pages/OverviewPage';
-import { InboxPage } from './pages/InboxPage';
-import { SendingPage } from './pages/SendingPage';
-import { LeadsPage } from './pages/LeadsPage';
-import { ScoutingPlansPage } from './pages/ScoutingPlansPage';
-import { AccountsPage } from './pages/AccountsPage';
-import { SettingsPage } from './pages/SettingsPage';
 
-const navigationPages:NavPage[]=['dashboard','analytics','inbox','sending','leads','scouting-plans','accounts','notifications','settings'];
-function pageFromLocation():NavPage{const hash=window.location.hash.slice(1).split('/')[0];if(hash==='conversation')return 'inbox';if(navigationPages.includes(hash as NavPage))return hash as NavPage;const saved=sessionStorage.getItem('sendar-active-page');return navigationPages.includes(saved as NavPage)?saved as NavPage:'dashboard';}
-export default function App() {
- const [activePage,setActivePage]=useState<NavPage>(pageFromLocation);
- useEffect(()=>{sessionStorage.setItem('sendar-active-page',activePage);if(activePage==='inbox' && window.location.hash.startsWith('#conversation/'))return;if(window.location.hash!=='#'+activePage)window.history.replaceState({...window.history.state,relayConversation:false},'','#'+activePage);},[activePage]);
- useEffect(()=>{const pop=()=>setActivePage(pageFromLocation());window.addEventListener('popstate',pop);return()=>window.removeEventListener('popstate',pop);},[]);
- const [theme,setTheme]=useState<'light'|'dark'>(()=>localStorage.getItem('sendar-theme') === 'dark' ? 'dark':'light');
- const [mobileMenuOpen,setMobileMenuOpen]=useState(false);
- const [activeWorkspace,setActiveWorkspace]=useState<WorkspaceProfile>({id:'relay',name:'Relay Mail',subtitle:'Production workspace',ownerName:'Workspace owner',ownerEmail:'',avatarUrl:''});
- const [sendingState,setSendingState]=useState(emptySending);
- const [threads,setThreads]=useState<InboxThread[]>([]), [selectedThreadId,setSelectedThreadId]=useState('');
- const [leads,setLeads]=useState<Lead[]>([]), [leadBatches,setLeadBatches]=useState<LeadBatch[]>([]);
- const [plans,setPlans]=useState<ScoutingPlan[]>([]), [accounts,setAccounts]=useState<ConnectedAccount[]>([]);
- const [settings,setSettings]=useState<WorkspaceSettings>({workspaceName:'Relay Mail',timezone:'Africa/Lagos',dailyWorkspaceCap:40,delayBetweenSendsSec:0,maxRetries:3,stopOnReply:true,openTracking:false,linkTracking:false,unsubscribeFooter:false,customTrackingDomain:'',signature:'',notifyOnReply:false,notifyOnBouncePause:false,dailyDigestTime:'',planOpenTracking:false,includeSpamFolders:false});
- const [leadTotal,setLeadTotal]=useState(0), [campaignCount,setCampaignCount]=useState(0),[leadPage,setLeadPage]=useState<any>({});
- const [importProgress,setImportProgress]=useState<ImportProgress|null>(null);
- const [usageBlocked,setUsageBlocked]=useState(false);
- const [notice,setNotice]=useState('');
- const [syncHadErrors,setSyncHadErrors]=useState(false);
- const failedSyncAccounts=useRef(new Set<string>()),lastSyncIncludeSent=useRef(false);
- const [conversationLoadingId,setConversationLoadingId]=useState('');
- const [preparationRetry,setPreparationRetry]=useState(0);
- const [preparationRequestError,setPreparationRequestError]=useState('');
- const [notifications,setNotifications]=useState<any[]>([]),[notificationCursor,setNotificationCursor]=useState<string|null>(null);
- const [accountAlerts,setAccountAlerts]=useState<any[]>([]);
- const [dismissedAccountAlerts,setDismissedAccountAlerts]=useState<string[]>(()=>{try{const value=JSON.parse(localStorage.getItem('relay-dismissed-account-alerts')||'[]');return Array.isArray(value)?value.filter(v=>typeof v==='string').slice(-200):[];}catch{return [];}});
- const visibleAccountAlerts=accountAlerts.filter(a=>!dismissedAccountAlerts.includes(a.id));
- const dismissAccountAlerts=()=>{const ids=[...new Set([...dismissedAccountAlerts,...accountAlerts.map(a=>String(a.id))])].slice(-200);setDismissedAccountAlerts(ids);localStorage.setItem('relay-dismissed-account-alerts',JSON.stringify(ids));};
- const lastActivityAt=useRef(0);
- const [loaded,setLoaded]=useState(false), [error,setError]=useState(''), [unauthorized,setUnauthorized]=useState(false), [busy,setBusy]=useState(false);
- const selectedThreadRef=useRef('');
- const rawAccounts=useRef<any[]>([]), mutationLock=useRef(false), replyRequests=useRef(new Map<string,string>());
- const report=useCallback((e:unknown)=>{setSyncHadErrors(false);setError(e instanceof Error ? e.message : 'Request failed'); if(e instanceof ApiError && e.status===401) setUnauthorized(true);if(e instanceof ApiError && ['D1_READ_LIMIT','APP_USAGE_BUDGET'].includes(e.code))setUsageBlocked(true);},[]);
- const refresh=useCallback(async(cursor='')=>{
-  const data=await api('state?leadScope=active&leadCursor='+encodeURIComponent(cursor));
-  rawAccounts.current=data.accounts || [];
-  setAccountAlerts((data.healthEvents || []).filter((e:any)=>!e.resolvedAt).slice(0,10));
-  setNotifications((data.healthEvents || []).filter((e:any)=>!e.deletedAt));
-  setAccounts(rawAccounts.current.map(mapAccount)); setThreads((data.threads || []).map((t:any)=>mapThread(t,rawAccounts.current)));
-  setLeads((data.leads || []).map(mapLead)); setLeadTotal(Number(data.leadCounts?.active || 0)); setLeadPage(data.leadPage || {});
-  setLeadBatches((data.leadImportBatches || []).map((b:any)=>({id:b.id,name:b.fileName,sourceLabel:`${b.importedCount} imported · ${b.duplicateCount} duplicates · ${b.invalidCount} invalid`,leadCount:Number(b.leadCount),planName:'Automatic allocation',importedAt:b.createdAt})));
-  setPlans((data.templates || []).map(mapPlan)); setCampaignCount((data.campaigns || []).length);
-  setSendingState(mapSending((data.campaigns || []).find((c:any)=>c.name==='Direct send' && c.status !== 'Cancelled')));
-  setSettings(prev=>({...prev,healthNotificationEmail:data.healthNotificationEmail || '',workspaceName:data.workspaceName || 'Relay Mail',dailyWorkspaceCap:Number(data.cap),linkTracking:Boolean(data.linkTracking),openTracking:Boolean(data.openTracking),planOpenTracking:Boolean(data.planOpenTracking),includeSpamFolders:Boolean(data.includeSpamFolders)}));
-  setActiveWorkspace(prev=>({...prev,name:data.workspaceName || 'Relay Mail'}));
-  if(selectedThreadRef.current && data.threads?.some((t:any)=>t.id===selectedThreadRef.current)){
-   const detail=await api('thread?id='+encodeURIComponent(selectedThreadRef.current));
-   setThreads(prev=>prev.map(t=>t.id===detail.thread.id?{...mapThread(detail.thread,rawAccounts.current)}:t));
-  }
-  setLoaded(true); setUnauthorized(false);
- },[]);
- const refreshSending=useCallback(async(activity=true)=>{
-  const data=await api(activity?'sending/status':'sending/status?summary=1');
-  if(activity)lastActivityAt.current=Date.now();
-  if(data.accountAlerts)setAccountAlerts(data.accountAlerts);
-  setSendingState(prev=>{if(data.runs?.[0]?.status==='Cancelled')return emptySending;const next=mapSending(data.runs?.[0],data.deliveries || []);return activity?next:{...next,records:prev.id===next.id?prev.records:[]};});
- },[]);
- useEffect(()=>{refresh().catch(report);},[refresh,report]);
- useEffect(()=>{document.documentElement.classList.toggle('dark',theme==='dark');localStorage.setItem('sendar-theme',theme);},[theme]);
- useEffect(()=>{
-  if(!loaded || unauthorized || usageBlocked || !['sending','dashboard'].includes(activePage))return;
-  let stopped=false, polling=false;
-  const poll=async(initial=false)=>{if(document.hidden || mutationLock.current || polling)return;polling=true;try{
-    const activity=activePage==='sending' && (initial || (sendingState.backendStatus==='Sending' && Date.now()-lastActivityAt.current>=30000));
-    await refreshSending(activity);
-  }catch(e){if(!stopped)report(e);}finally{polling=false;}};
-  void poll(true);
-  if(activePage!=='sending' || sendingState.status!=='running')return()=>{stopped=true;};
-  const timer=setInterval(()=>void poll(),sendingState.backendStatus==='Scheduled'?60000:5000);
-  return()=>{stopped=true;clearInterval(timer);};
- },[loaded,unauthorized,usageBlocked,activePage,sendingState.status,sendingState.backendStatus,refreshSending,report]);
- useEffect(()=>{const timer=setInterval(()=>setThreads(prev=>prev.filter(t=>Date.parse(t.inboundAt || '')>=Date.now()-86400000)),60000);return()=>clearInterval(timer);},[]);
-
- useEffect(()=>{
-  if(!loaded || usageBlocked || unauthorized || sendingState.backendStatus!=='Preparing' || !sendingState.id)return;
-  if(sendingState.preparation?.error && preparationRetry===0)return;
-  let stopped=false,timer:ReturnType<typeof setTimeout>;
-  const advance=async()=>{
-   if(stopped)return;
-   if(document.hidden || mutationLock.current){timer=setTimeout(advance,500);return;}
-   try{const result=await api('campaign/prepare',{campaignId:sendingState.id});if(stopped)return;setPreparationRequestError('');await refreshSending(false);if(result.preparation?.status==='Preparing')timer=setTimeout(advance,result.preparation.busy?1000:150);}
-   catch(e){if(!stopped){setPreparationRequestError(sendingState.id || '');report(e);await refreshSending(false).catch(()=>{});}}
+type IconName = 'grid' | 'inbox' | 'send' | 'users' | 'plan' | 'accounts' | 'chart' | 'settings' | 'search' | 'bell' | 'help' | 'moon' | 'sun' | 'chevron' | 'plus' | 'arrow' | 'check' | 'clock' | 'close' | 'menu' | 'shield' | 'upload' | 'more' | 'archive';
+function Icon({ name, className = '' }: { name: IconName; className?: string }) {
+  const paths: Record<IconName, string> = {
+    grid: 'M3 3h7v7H3z M14 3h7v7h-7z M3 14h7v7H3z M14 14h7v7h-7z',
+    inbox: 'M4 4h16l2 12v4H2v-4L4 4z M2 15h6l2 3h4l2-3h6',
+    send: 'm21 3-6 18-4-8-8-4 18-6z M11 13 21 3',
+    users: 'M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2 M9 11a4 4 0 1 0 0-8 4 4 0 0 0 0 8 M18 8a3 3 0 0 1 0 6 M22 21v-2a4 4 0 0 0-3-4',
+    plan: 'M8 3h12v18H4V7h4V3z M8 3v4H4 M8 12h8 M8 16h6',
+    accounts: 'M3 5h18v14H3z m0 1 9 7 9-7',
+    chart: 'M4 3v18h18 M9 17v-5 M14 17V8 M19 17V4',
+    settings: 'm9 3-1 3-3 1-2 3 2 2-1 4 3 2 3-1 3 3 3-2v-3l3-2v-4l-3-1-1-4-4-1-2 3z M15 12a3 3 0 1 1-6 0 3 3 0 0 1 6 0',
+    search: 'M20 20l-5-5 M17 10a7 7 0 1 1-14 0 7 7 0 0 1 14 0',
+    bell: 'M18 8a6 6 0 0 0-12 0c0 7-3 7-3 9h18c0-2-3-2-3-9 M10 21h4',
+    help: 'M9 9a3 3 0 0 1 6 0c0 2-3 2-3 5 M12 17h.01 M22 12a10 10 0 1 1-20 0 10 10 0 0 1 20 0',
+    moon: 'M21 13A9 9 0 0 1 11 3 9 9 0 1 0 21 13',
+    sun: 'M12 2v2 M12 20v2 M2 12h2 M20 12h2 M5 5l2 2 M17 17l2 2 M5 19l2-2 M17 7l2-2 M16 12a4 4 0 1 1-8 0 4 4 0 0 1 8 0',
+    chevron: 'm9 6 6 6-6 6', plus: 'M12 5v14 M5 12h14',
+    arrow: 'M4 12h16 m-6-6 6 6-6 6', check: 'm5 12 4 4L19 6',
+    clock: 'M12 7v5l3 2 M22 12a10 10 0 1 1-20 0 10 10 0 0 1 20 0',
+    close: 'm6 6 12 12 M6 18 18 6', menu: 'M4 6h16 M4 12h16 M4 18h16',
+    shield: 'm12 3 9 4v6c0 5-9 9-9 9s-9-4-9-9V7l9-4z m-4 9 3 3 5-6',
+    upload: 'M12 16V3 m-5 5 5-5 5 5 M3 15v6h18v-6',
+    more: 'M5 12h.01 M12 12h.01 M19 12h.01',
+    archive: 'M3 3h18v5H3z M5 8v13h14V8 M10 12h4',
   };
-  void advance();return()=>{stopped=true;clearTimeout(timer);};
- },[loaded,usageBlocked,unauthorized,sendingState.id,sendingState.backendStatus,preparationRetry,refreshSending,report]);
-
- const perform=async(work:()=>Promise<unknown>)=>{if(mutationLock.current)throw new Error('Please wait for the current operation.');mutationLock.current=true;setBusy(true);setError('');try{await work();try{await refresh();await refreshSending();}catch(e){report(new Error('Saved successfully, but refreshing failed. Reload before repeating this action. '+(e as Error).message));}return true;}catch(e){report(e);throw e;}finally{mutationLock.current=false;setBusy(false);}};
- // Catch event-handler rejections centrally; forms still await and retain their drafts on failure.
- const action=(work:()=>Promise<unknown>)=>perform(work);
- useEffect(()=>{const listener=(e:PromiseRejectionEvent)=>{e.preventDefault();report(e.reason);};window.addEventListener('unhandledrejection',listener);return()=>window.removeEventListener('unhandledrejection',listener);},[report]);
- const toggleTheme=()=>setTheme(t=>t==='light'?'dark':'light');
- const handleToggleRunStatus=()=>action(()=>api(sendingState.status==='running'?'campaign/pause':'campaign/resume-pending',{campaignId:sendingState.id}));
- const handleInitiateSending=()=>action(()=>api('sending/start',{}));
- const handleResolveRecord=(deliveryId:string,resolution:string)=>{
-  const record=sendingState.records.find(r=>r.id===deliveryId);
-  if(resolution==='retry' && record?.result==='Needs review'){
-   if(!window.confirm('This email may already have been delivered. Check the sender’s Sent folder first. Retry with duplicate risk?'))return Promise.resolve();
-   return action(()=>api('campaign/retry-uncertain',{deliveryId}));
+  return <svg className={`h-[18px] w-[18px] shrink-0 ${className}`} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.65" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d={paths[name]} /></svg>;
+}
+const navigation: { label: string; icon: IconName }[] = [
+  { label: 'Overview', icon: 'grid' }, { label: 'Inbox', icon: 'inbox' }, { label: 'Sending', icon: 'send' },
+  { label: 'Leads', icon: 'users' }, { label: 'Scouting Plans', icon: 'plan' }, { label: 'Accounts', icon: 'accounts' },
+  { label: 'Analytics', icon: 'chart' }, { label: 'Settings', icon: 'settings' },
+];
+const initialCampaigns = [
+  { name: 'Q3 brand partnerships', detail: 'US & Canada · 3 mailboxes', status: 'Sending', sent: 324, total: 500, queued: 172, failed: 2, review: 2, color: 'blue' },
+  { name: 'Independent stores · London', detail: 'United Kingdom · 2 mailboxes', status: 'Scheduled', sent: 0, total: 240, queued: 240, failed: 0, review: 0, color: 'violet' },
+  { name: 'Founder introductions', detail: 'Global · 2 mailboxes', status: 'Waiting for capacity', sent: 186, total: 300, queued: 114, failed: 0, review: 0, color: 'amber' },
+  { name: 'Summer retail follow-up', detail: 'Europe · 2 mailboxes', status: 'Complete', sent: 180, total: 180, queued: 0, failed: 0, review: 0, color: 'green' },
+];
+const people = [
+  { name: 'Olivia Rhye', company: 'Layers', initials: 'OR', subject: 'Re: A little something for Layers', preview: 'This sounds like a great fit! Would love to hear more.', time: '10:42 AM', tag: 'Interested', color: 'bg-orange-100 text-orange-800' },
+  { name: 'Phoenix Baker', company: 'Sisyphus', initials: 'PB', subject: 'Re: Exploring a partnership', preview: 'Thanks for reaching out, Alex. Can you send over…', time: '10:28 AM', tag: 'Needs reply', color: 'bg-violet-100 text-violet-800' },
+  { name: 'Lana Steiner', company: 'Catalog', initials: 'LS', subject: 'Re: Quick introduction', preview: 'Let’s reconnect next week when our team is back.', time: '9:56 AM', tag: 'Follow-up', color: 'bg-blue-100 text-blue-800' },
+  { name: 'Demi Wilkinson', company: 'Quotient', initials: 'DW', subject: 'Re: Working together', preview: 'Hi Alex, appreciate you thinking of us!', time: '9:31 AM', tag: 'Interested', color: 'bg-rose-100 text-rose-800' },
+];
+const button = 'inline-flex min-h-11 items-center justify-center gap-2 rounded-lg border border-[var(--line)] bg-[var(--surface)] px-4 text-sm font-medium transition duration-200 hover:bg-[var(--hover)] active:scale-[0.97] disabled:cursor-not-allowed disabled:saturate-0 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 motion-reduce:transform-none';
+const primary = `${button} !border-[#1237e8] !bg-[#1237e8] !text-white hover:!bg-blue-800`;
+const panel = 'rounded-xl border border-[var(--line)] bg-[var(--surface)]';
+function Badge({ children, tone = 'green' }: { children: React.ReactNode; tone?: string }) {
+  return <span className={`inline-flex items-center gap-1.5 whitespace-nowrap rounded-md px-2 py-1 text-xs font-medium ${tone === 'green' ? 'bg-emerald-50 text-emerald-800' : tone === 'amber' ? 'bg-amber-50 text-amber-800' : tone === 'blue' ? 'bg-blue-50 text-blue-700' : 'bg-violet-50 text-violet-700'}`}><span className="h-1.5 w-1.5 rounded-full bg-current" />{children}</span>;
+}
+function Logo() {
+  return <div className="flex items-center gap-2.5"><div className="relative flex h-9 w-9 items-center justify-center rounded-[11px] bg-[#1237e8] text-[30px] font-black italic leading-none text-white">S<svg className="absolute right-1 top-1 h-4 w-4 text-white" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="m22 2-7 19-5-8L2 9l20-7-12 11" /></svg></div><span className="text-[26px] font-bold tracking-[-1.2px]">Sendar<span className="text-[#1237e8]">.</span></span></div>;
+}
+function Modal({ title, children, close }: { title: string; children: React.ReactNode; close: () => void }) {
+  const ref = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    const previous = document.activeElement as HTMLElement;
+    const el = ref.current;
+    (el?.querySelector<HTMLElement>('input,textarea,select') || el?.querySelector<HTMLElement>('button'))?.focus();
+    function key(e: KeyboardEvent) {
+      if (e.key === 'Escape') close();
+      if (e.key !== 'Tab' || !el) return;
+      const all = el.querySelectorAll<HTMLElement>('button,input,textarea,select,[tabindex="0"]');
+      const first = all[0], last = all[all.length - 1];
+      if (e.shiftKey && document.activeElement === first) { e.preventDefault(); last?.focus(); }
+      if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first?.focus(); }
+    }
+    document.addEventListener('keydown', key);
+    return () => { document.removeEventListener('keydown', key); previous?.focus(); };
+  }, [close]);
+  return <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/40 p-4 backdrop-blur-sm motion-safe:animate-[veil_160ms_ease-out]" onClick={close}><div ref={ref} role="dialog" aria-modal="true" aria-labelledby="modal-title" onClick={e => e.stopPropagation()} className={`${panel} max-h-[90vh] w-full max-w-lg overflow-y-auto p-6 shadow-xl motion-safe:animate-[arrive_220ms_ease-out]`}><div className="mb-5 flex items-center justify-between"><h2 id="modal-title" className="text-xl font-semibold">{title}</h2><button className={`${button} !px-3`} onClick={close} aria-label="Close dialog"><Icon name="close" /></button></div>{children}</div></div>;
+}
+export default function App() {
+  const [page, setPage] = useState('Overview'), [dark, setDark] = useState(() => {
+    try { return localStorage.getItem('sendar-theme') === 'dark'; } catch { return false; }
+  }), [collapsed, setCollapsed] = useState(false);
+  const [demo, setDemo] = useState(true), [modal, setModal] = useState(''), [toast, setToast] = useState('');
+  const [search, setSearch] = useState(''), [campaigns, setCampaigns] = useState(initialCampaigns), [selected, setSelected] = useState<number | null>(null);
+  const [folder, setFolder] = useState('All replies'), [reply, setReply] = useState('');
+  const [messages, setMessages] = useState<{ text: string; time: string; person: number }[]>([]);
+  const [threadState, setThreadState] = useState<Record<number, { read?: boolean; archived?: boolean; snoozed?: boolean; interested?: boolean; owner?: string }>>({});
+  const [pausedAccounts, setPausedAccounts] = useState<string[]>([]);
+  const [removedAccounts, setRemovedAccounts] = useState<string[]>([]);
+  const [targetAccount, setTargetAccount] = useState('');
+  const [command, setCommand] = useState('');
+  const [settings, setSettings] = useState<Record<string, string>>(() => {
+    try { return JSON.parse(localStorage.getItem('sendar-settings') || '{}'); } catch { return {}; }
+  });
+  const toastTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const threadEnd = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    try { localStorage.setItem('sendar-theme', dark ? 'dark' : 'light'); } catch { /* unavailable */ }
+  }, [dark]);
+  const [planName, setPlanName] = useState(''), [body, setBody] = useState('Hi {{name}},\n\nI came across {{store}} and thought we could make something great together.\n\nWould you be open to a quick conversation?');
+  const [plans, setPlans] = useState<string[]>(() => { try { return JSON.parse(localStorage.getItem('sendar-plans') || '[]'); } catch { return []; } });
+  const [batches, setBatches] = useState<{ name: string; count: number; invalid: number }[]>([]);
+  const [period, setPeriod] = useState('Last 7 days');
+  const fileRef = useRef<HTMLInputElement>(null);
+  function notify(text: string) {
+    if (toastTimer.current) clearTimeout(toastTimer.current);
+    setToast(text); toastTimer.current = setTimeout(() => setToast(''), 4500);
   }
-  return action(()=>api('campaign/review',{campaignId:sendingState.id,deliveryId,action:resolution}));
- };
- const handleSelectThread=async(id:string,loadOlder=false)=>{
-  selectedThreadRef.current=id;setSelectedThreadId(id);
-  try{
-   const local=await api('thread?id='+encodeURIComponent(id));
-   setThreads(prev=>prev.map(t=>t.id===id?{...mapThread(local.thread,rawAccounts.current)}:t));
-   const account=rawAccounts.current.find(a=>a.id===local.thread.accountId);
-   if(!account?.hasCredentials)return;
-   setConversationLoadingId(id);
-   const result=await api('mail/conversation',{threadId:id,manual:true,loadOlder});
-   if(result.busy){setNotice('This account is already syncing. Refresh the conversation when it finishes.');return;}
-   if(result.thread)setThreads(prev=>prev.filter(t=>!(result.retiredThreadIds || []).includes(t.id)).map(t=>t.id===id?{...mapThread(result.thread,rawAccounts.current)}:t));
-  }catch(e){report(e);}finally{setConversationLoadingId(current=>current===id?'':current);}
- };
- const handleSendReply=(id:string,text:string)=>action(async()=>{const key=id+'\n'+text;let requestId=replyRequests.current.get(key);if(!requestId){requestId=crypto.randomUUID();replyRequests.current.set(key,requestId);}await api('reply',{id,text,requestId});replyRequests.current.delete(key);});
- const updateThread=(id:string,updates:any)=>action(()=>api('thread/update',{id,...updates}));
- const handleUpdateThreadTag=(id:string,tag:ThreadTag)=>updateThread(id,{tag});
- const handleToggleStar=(id:string)=>updateThread(id,{starred:!threads.find(t=>t.id===id)?.starred});
- const handleToggleArchive=(id:string)=>updateThread(id,{archived:!threads.find(t=>t.id===id)?.archived});
- const handleToggleRead=(id:string)=>updateThread(id,{unread:!threads.find(t=>t.id===id)?.unread});
- const handleAddLead=(l:any)=>action(()=>api('import',{fileName:'Manual lead',text:csv([['name','email','store'],[l.name,l.email,l.company]])}));
- const handleImportLeadBatch=(p:any)=>action(async()=>{try{return await importWithProgress(p.batchName,p.rawText,setImportProgress);}catch(e){setImportProgress(prev=>prev?{...prev,phase:'error',error:(e as Error).message}:null);throw e;}});
- const handleDeleteBatches=(ids:string[])=>action(async()=>{for(const batchId of ids)await api('import/batch/delete',{batchId});});
- const handleUpdateLeadStatus=(id:string,status:string)=>{if(status!=='Paused')return Promise.reject(new Error('Only archiving a lead is supported here.'));if(!window.confirm('Remove this lead from the active list? Unused leads are deleted; leads with send history are archived.'))return Promise.resolve();return action(()=>api('lead/delete',{id}));};
- const handleAssignLeadsToPlan=()=>{setError('Plans are assigned automatically to eligible senders when a run starts.');};
- const handleQueueLeadsForSending=()=>{setActivePage('sending');};
- const handleTogglePlanStatus=(id:string)=>action(()=>api('template/status',{id,paused:plans.find(p=>p.id===id)?.status==='Active'}));
- const handleCreateMultiplePlans=(drafts:any[])=>action(async()=>{for(const d of drafts)await api('template',{name:d.name,subject:d.firstSubject,body:d.firstPreview});});
- const handleUpdatePlan=(id:string,u:any)=>action(async()=>{await api('template/update',{id,name:u.name,subject:u.steps[0]?.subject || '',body:u.steps[0]?.preview || u.description});await api('template/status',{id,paused:u.status!=='Active'});});
- const handleDeletePlan=(id:string)=>action(()=>api('template/delete',{id}));
- const handleDuplicatePlan=(id:string)=>action(async()=>{const p=plans.find(p=>p.id===id)!;await api('template',{name:p.name+' (Copy)',subject:p.steps[0]?.subject || '',body:p.steps[0]?.preview || p.description});});
- const handleToggleAccountStatus=(id:string)=>action(()=>api('account',{id}));
- const handleToggleWarmup=()=>setError('Automated warmup is not available.');
- const handleUpdateDailyLimit=(id:string,cap:number)=>action(()=>api('account/cap',{id,cap}));
- const handleConnectAccount=(p:any)=>action(async()=>{const result=await api('account/connect',{email:p.email,appPassword:p.appPassword});await api('account/cap',{id:result.id,cap:p.dailyLimit});});
- const healthCheckLock=useRef(false);
- const [healthChecking,setHealthChecking]=useState(false),[healthProgress,setHealthProgress]=useState('');
- const autoHealthStarted=useRef(false);
- const checkAllHealth=async(uncheckedOnly=false)=>{
-  if(healthCheckLock.current)return;healthCheckLock.current=true;setHealthChecking(true);
-  const targets=rawAccounts.current.filter(a=>a.hasCredentials && (!uncheckedOnly || !a.healthCheckedAt));let completed=0,saved=0,failed=0;let firstError='';
-  const progress=()=>setHealthProgress(`Health checks: ${saved} results saved · ${completed}/${targets.length} processed · ${failed} requests failed${firstError?' · '+firstError:''}`);
-  progress();
-  try{await runSyncPool(targets,async a=>{try{const result=await api('account/health/check',{accountId:a.id,force:true,suppressNotification:true});if(!result.checked)throw new Error(result.reason || 'Health check was not saved.');saved++;const patch={healthStatus:result.healthStatus,healthCheckedAt:result.healthCheckedAt,healthMessage:result.healthMessage,healthCode:result.healthCode};rawAccounts.current=rawAccounts.current.map(account=>account.id===a.id?{...account,...patch}:account);setAccounts(previous=>previous.map(account=>account.id===a.id?{...account,healthStatus:result.healthStatus,healthMessage:result.healthMessage || ''}:account));}catch(e){failed++;if(!firstError)firstError=(e as Error).message;}finally{completed++;progress();}},25);await refresh();progress();}catch(e){report(e);}finally{healthCheckLock.current=false;setHealthChecking(false);}
- };
- useEffect(()=>{if(!loaded || unauthorized || usageBlocked || activePage!=='accounts' || autoHealthStarted.current)return;if(!rawAccounts.current.some(a=>a.hasCredentials && !a.healthCheckedAt))return;autoHealthStarted.current=true;void checkAllHealth(true);},[loaded,unauthorized,usageBlocked,activePage]);
- const handleRunDnsCheck=(id:string)=>action(()=>api('account/health/check',{accountId:id,force:true,suppressNotification:true}));
- const saveFeatures=async(flags:Partial<FeatureFlags>)=>{await api('settings/features',flags);setSettings(prev=>({...prev,...flags}));};
- const refreshUsage=(usage:{sendingHeld:boolean})=>{setUsageBlocked(usage.sendingHeld);if(!usage.sendingHeld)setError(prev=>/application.*budget|Database usage/i.test(prev)?'':prev);};
- const saveSettings=(next:WorkspaceSettings)=>action(()=>api('settings',{cap:next.dailyWorkspaceCap,workspaceName:next.workspaceName,healthNotificationEmail:next.healthNotificationEmail || '',linkTracking:Boolean(next.linkTracking),openTracking:Boolean(next.openTracking),planOpenTracking:Boolean(next.planOpenTracking),includeSpamFolders:Boolean(next.includeSpamFolders)}));
- const nextLeadPage=()=>refresh(leadPage.nextCursor).catch(report);
- const syncLock=useRef(false);
- const syncMail=async(includeSent=true,retryOnly=false)=>{
-  if(syncLock.current)return;syncLock.current=true;setError('');
-  const targets=rawAccounts.current.filter(a=>a.hasCredentials && ['Connected','IMAP only'].includes(a.connection) && (!retryOnly || failedSyncAccounts.current.has(a.id)));
-  failedSyncAccounts.current=new Set();lastSyncIncludeSent.current=includeSent;setSyncHadErrors(false);
-  let completed=0,bounces=0,more=0,alreadySyncing=0;setNotice(`Checking up to 50 accounts at once · 0/${targets.length} completed`);
-  try{const issues:string[]=[];let sharedFailure=false,skipped=0;
-   const storageFailure=(e:unknown)=>e instanceof ApiError && ['APP_USAGE_UNAVAILABLE','APP_USAGE_BUDGET','D1_READ_LIMIT','APP_STORAGE_UNAVAILABLE'].includes(e.code);
-   const recordSharedFailure=(e:unknown)=>{if(!storageFailure(e))return false;if(!sharedFailure)issues.push('Dashboard database issue: '+(e as Error).message);sharedFailure=true;return true;};
-   const unreadByAccount=new Map<string,InboxThread[]>();
-   if(includeSent){const byEmail=new Map(targets.map(a=>[a.email,a.id]));for(const thread of threads)if(thread.unread){const id=byEmail.get(thread.accountEmail);if(id){const group=unreadByAccount.get(id)||[];group.push(thread);unreadByAccount.set(id,group);}}}
-   await runSyncPool(targets,async a=>{
-    if(sharedFailure){skipped++;failedSyncAccounts.current.add(a.id);return;}
-    for(const thread of unreadByAccount.get(a.id)||[]){try{const result=await api('mail/conversation',{threadId:thread.id,manual:true,reconcileUnread:true});if(result.busy)throw new Error('Mailbox is already syncing; retry when it finishes.');if(result.thread){const mapped=mapThread(result.thread,rawAccounts.current);setThreads(prev=>prev.filter(t=>!(result.retiredThreadIds || []).includes(t.id)).map(t=>t.id===mapped.id?mapped:t));}}catch(e){if(!recordSharedFailure(e))issues.push('Unread conversation '+thread.contactEmail+': '+(e as Error).message);failedSyncAccounts.current.add(a.id);if(sharedFailure)break;}}
-    if(sharedFailure){skipped++;failedSyncAccounts.current.add(a.id);return;}
-    try{const result=await api('mail/sync',{accountId:a.id,manual:true,includeSent});
-     bounces+=Number(result.bounces || 0);if(result.more)more++;if(result.busy){alreadySyncing++;failedSyncAccounts.current.add(a.id);issues.push(a.email+': another sync is still running. Retry when it finishes.');return;}
-     const mailErrors=[...new Set([result.inboxError,result.sentError,result.bounceError].filter(Boolean).map((e:string)=>e.replace(/^.*?sync failed/,'Mailbox sync failed')))];if(mailErrors.length){issues.push(a.email+': '+mailErrors.join(' · '));failedSyncAccounts.current.add(a.id);}
-     if(result.threads?.length){
-      const incoming=result.threads.map((t:any)=>mapThread(t,rawAccounts.current));
-      setThreads(prev=>{const merged=new Map(prev.map(t=>[t.id,t]));for(const t of incoming){if(t.id!==selectedThreadRef.current)merged.set(t.id,t);}return [...merged.values()];});
-      if(result.threads.some((t:any)=>t.id===selectedThreadRef.current)){const detail=await api('thread?id='+encodeURIComponent(selectedThreadRef.current));const preview=incoming.find((t:InboxThread)=>t.id===detail.thread.id);setThreads(prev=>prev.map(t=>t.id===detail.thread.id?{...mapThread(detail.thread,rawAccounts.current),inboundAt:preview?.inboundAt || t.inboundAt}:t));}
-     }
-    }catch(e){if(!recordSharedFailure(e))issues.push(a.email+': '+(e as Error).message);failedSyncAccounts.current.add(a.id);}
-    finally{completed++;setNotice(`Checking mail: ${completed}/${targets.length} accounts · ${bounces} bounces recorded · Up to 50 accounts at once`);}
-   },50);
-   try{await refresh();}catch(e){issues.push('Mailbox checks completed, but refreshing the dashboard failed: '+(e as Error).message);}
-   try{await refreshSending();}catch(e){issues.push('Refreshing sending statistics failed: '+(e as Error).message);}
-
-   setNotice(`${sharedFailure?'Sync stopped because the dashboard database is unavailable. ':'Manual sync finished: '}${completed} accounts checked · ${bounces} new bounced deliveries recorded.${skipped?` ${skipped} accounts deferred; Retry checks them after recovery.`:''}${alreadySyncing?` ${alreadySyncing} already syncing in another session.`:''}${more?' More messages remain; click Sync again to continue.':''}`);
-   if(issues.length){setError(issues.join('; '));setSyncHadErrors(true);}
-  }catch(e){report(e);}finally{syncLock.current=false;}
- };
-
- const reloadSyncStarted=useRef(false);
- useEffect(()=>{if(!loaded || unauthorized || usageBlocked || reloadSyncStarted.current)return;const navigation=performance.getEntriesByType('navigation')[0] as PerformanceNavigationTiming|undefined;if(navigation?.type==='reload'){reloadSyncStarted.current=true;void syncMail();}},[loaded,unauthorized,usageBlocked]);
- const loadNotifications=async(append=false)=>{try{const data=await api('notifications'+(append && notificationCursor?'?before='+encodeURIComponent(notificationCursor):''));setNotifications(prev=>append?[...prev,...data.events]:data.events);setNotificationCursor(data.nextCursor || null);}catch(e){report(e);}};
- useEffect(()=>{if(loaded && activePage==='notifications')void loadNotifications();},[loaded,activePage]);
- const deleteNotification=async(id:string)=>{try{await api('notifications/delete',{eventId:id});setNotifications(prev=>prev.filter(n=>n.id!==id));}catch(e){report(e);}};
- const deleteReadNotifications=async()=>{try{await api('notifications/delete-read',{});await loadNotifications();}catch(e){report(e);}};
- const markNotificationRead=async(id:string)=>{try{await api('account/health/read',{eventId:id});setNotifications(prev=>prev.map(n=>n.id===id?{...n,readAt:new Date().toISOString()}:n));}catch(e){report(e);}};
-
-  const unreadInboxCount = threads.filter((t) => t.unread && !t.archived).length;
-  const flaggedSendingCount =
-    sendingState.failedCount + sendingState.needsReviewCount;
-  const connectedAccountsCount = accounts.filter(
-    (a) => a.status === 'Connected'
-  ).length;
-
-  return <SendarShell activePage={activePage} onNavigate={page=>{if(page!=='inbox'&&window.location.hash.startsWith('#conversation/'))window.history.replaceState({...window.history.state,relayConversation:false},'',window.location.pathname+window.location.search);setActivePage(page);}} theme={theme} onToggleTheme={toggleTheme} workspaceName={activeWorkspace.name} connected={connectedAccountsCount} total={accounts.length} unread={unreadInboxCount} flagged={flaggedSendingCount} hasNotifications={notifications.some(n=>!n.readAt)} onRefresh={()=>{refresh().catch(report);refreshSending().catch(report);}}>
-
-          {error && <div role="alert" className="mb-5 p-4 rounded-[14px] border border-red-400 text-[var(--color-danger)]">{syncHadErrors ? <><p>Some mailbox checks could not finish. This does not mean the accounts are restricted. Successful results have been kept.</p><details className="mt-2"><summary className="cursor-pointer underline">View sync error details</summary><p className="mt-2 break-words max-h-64 overflow-y-auto">{error}</p></details></> : error}<button type="button" aria-label="Dismiss error notification" className="ml-4 underline" onClick={()=>{setError('');setSyncHadErrors(false);}}>Dismiss</button><button className="ml-4 underline" onClick={() => {setError('');setUsageBlocked(false);if(syncHadErrors)void syncMail(lastSyncIncludeSent.current,true);else refresh().catch(report);}}>Retry</button>{unauthorized && <a className="ml-4 underline" href="/sendar/signin?access=administrator">Sign in</a>}</div>}
-          {visibleAccountAlerts.length>0 && <div role="alert" className="mb-5 p-4 rounded-[14px] border border-amber-400 bg-[var(--color-surface)] text-[13px]"><div className="flex justify-between items-center gap-3"><strong>Sender accounts need attention</strong><button type="button" aria-label="Dismiss sender account warning" className="underline shrink-0" onClick={dismissAccountAlerts}>Dismiss</button></div>{visibleAccountAlerts.slice(0,3).map(a=><p key={a.id} className="mt-2 break-words">{a.accountEmail} · {a.status}: {a.message}</p>)}<button className="mt-3 underline" onClick={()=>{setActivePage('accounts');refresh().catch(report);}}>Review accounts</button></div>}
-          {notice && <div role="status" className="mb-5 p-4 rounded-[14px] border border-[var(--color-border)] text-[13px]">{notice}{!busy && <button className="ml-3 underline" onClick={()=>setNotice('')}>Dismiss</button>}</div>}
-          {!loaded && !error && <p role="status">Loading your workspace…</p>}
-          {importProgress && <div role="status" className="mb-5 p-4 rounded-[14px] border border-[var(--color-border)] bg-[var(--color-surface)]"><div className="flex justify-between gap-3 text-[13px] mb-3"><strong>Lead import · {importProgress.phase}</strong><span>{importProgress.phase==='complete'?'100%':importProgress.total?Math.min(99,Math.floor(100*importProgress.completed/importProgress.total))+'%':''}</span></div><progress aria-label="Lead import progress" className="w-full h-2 accent-[var(--color-brand)]" max={importProgress.total || 1} value={importProgress.phase==='complete'?(importProgress.total || 1):importProgress.total===null?undefined:importProgress.completed}/><p className="mt-2 text-[12px] text-[var(--color-muted)]">{importProgress.result?`${importProgress.result.imported} imported · ${importProgress.result.duplicates} duplicates · ${importProgress.result.invalid} invalid`:importProgress.error || 'Saving real import records. You can follow this progress from any section.'}</p>{['complete','error'].includes(importProgress.phase)&&<button className="mt-2 underline text-[12px]" onClick={()=>setImportProgress(null)}>Dismiss</button>}</div>}
-          {busy && <p role="status" className="mb-3 text-[var(--color-muted)]">Working…</p>}
-          <fieldset disabled={busy} className="min-w-0 contents">
-          {loaded && !unauthorized && activePage==='notifications' && <NotificationsPage onDelete={deleteNotification} onDeleteRead={deleteReadNotifications} events={notifications} hasMore={!!notificationCursor} onRefresh={()=>void loadNotifications()} onLoadMore={()=>void loadNotifications(true)} onMarkRead={markNotificationRead} onReviewAccount={()=>{setActivePage('accounts');refresh().catch(report);}}/>}
-          {loaded && !unauthorized && activePage === 'dashboard'  && (
-            <DashboardPage leadTotal={leadTotal} campaignCount={campaignCount}
-              sendingState={sendingState}
-              threads={threads}
-              leads={leads}
-              plans={plans}
-              accounts={accounts}
-              onNavigate={setActivePage}
-              onSelectThread={handleSelectThread}
-            />
-          )}
-          {loaded && !unauthorized && activePage === 'inbox' && (
-            <InboxPage features={settings} onFeatureChange={saveFeatures} conversationLoadingId={conversationLoadingId} onLoadOlder={id=>void handleSelectThread(id,true)} onSync={syncMail}
-              threads={threads}
-              selectedThreadId={selectedThreadId}
-              onSelectThread={handleSelectThread}
-              onSendReply={handleSendReply}
-              onUpdateThreadTag={handleUpdateThreadTag}
-              onToggleStar={handleToggleStar}
-              onToggleArchive={handleToggleArchive}
-              onToggleRead={handleToggleRead}
-            />
-          )}
-          {loaded && !unauthorized && activePage === 'sending' && (
-            <SendingPage features={settings} onFeatureChange={saveFeatures}
-              sendingState={sendingState}
-              accounts={accounts}
-              onToggleRunStatus={handleToggleRunStatus}
-              onCancel={()=>action(async()=>{await api('campaign/cancel',{campaignId:sendingState.id});setNotice('Campaign cancelled. Import new leads and initiate a new campaign when ready.');})}
-              preparationRequestFailed={preparationRequestError===sendingState.id}
-              onResumePreparation={()=>{setError('');setPreparationRequestError('');setPreparationRetry(n=>n+1);}}
-              onRebalance={()=>action(async()=>{const result=await api('campaign/rebalance',{campaignId:sendingState.id});setNotice(`Queued work updated: ${result.queued} emails across ${result.accounts} accounts. Resume queued when ready.`);})}
-              onInitiateSending={handleInitiateSending}
-              onResolveAll={resolution=>action(()=>api('campaign/review',{campaignId:sendingState.id,action:resolution}))}
-              onResolveRecord={handleResolveRecord}
-            />
-          )}
-          {loaded && !unauthorized && activePage === 'leads' && (
-            <LeadsPage totalCount={leadTotal} hasMore={!!leadPage.nextCursor} onNextPage={nextLeadPage} onFirstPage={() => refresh()}
-              leads={leads}
-              leadBatches={leadBatches}
-              plans={plans}
-              onAddLead={handleAddLead}
-              onImportLeadBatch={handleImportLeadBatch}
-              onDeleteBatches={handleDeleteBatches}
-              onUpdateLeadStatus={handleUpdateLeadStatus}
-              onAssignLeadsToPlan={handleAssignLeadsToPlan}
-              onQueueLeadsForSending={handleQueueLeadsForSending}
-            />
-          )}
-          {loaded && !unauthorized && activePage === 'scouting-plans' && (
-            <ScoutingPlansPage
-              plans={plans}
-              accounts={accounts}
-              onTogglePlanStatus={handleTogglePlanStatus}
-              onCreateMultiplePlans={handleCreateMultiplePlans}
-              onUpdatePlan={handleUpdatePlan}
-              onDeletePlan={handleDeletePlan}
-              onDuplicatePlan={handleDuplicatePlan}
-            />
-          )}
-          {loaded && !unauthorized && activePage === 'accounts' && (
-            <AccountsPage
-              accounts={accounts}
-              onToggleAccountStatus={handleToggleAccountStatus}
-              onToggleWarmup={handleToggleWarmup}
-              onUpdateDailyLimit={handleUpdateDailyLimit}
-              onConnectAccount={handleConnectAccount}
-              onRunDnsCheck={handleRunDnsCheck}
-              onCheckAllHealth={()=>checkAllHealth()}
-              healthChecking={healthChecking}
-              healthProgress={healthProgress}
-            />
-          )}
-          {loaded && !unauthorized && activePage === 'settings' && (
-            <SettingsPage onUsageRefresh={refreshUsage}
-              settings={settings}
-              onSaveSettings={saveSettings}
-              theme={theme}
-              onSetTheme={setTheme}
-            />
-          )}
-          {loaded&&!unauthorized&&activePage==='analytics'&&<div className="space-y-6"><div><h1 className="text-[30px] font-semibold tracking-tight">Email analytics</h1><p className="mt-2 text-[14px] text-[var(--color-muted)]">Measured opens, clicks and replies, grouped by scouting plan.</p></div><TrackingAnalytics campaignId={sendingState.id} all defaultOpen/></div>}
-          </fieldset>
-
-  </SendarShell>;
+  function updateThread(change: Partial<{ read: boolean; archived: boolean; snoozed: boolean; interested: boolean; owner: string }>) {
+    if (selected !== null) setThreadState(s => ({ ...s, [selected]: { ...s[selected], ...change } }));
+  }
+  function selectThread(index: number) {
+    setSelected(index);
+    setThreadState(s => ({ ...s, [index]: { ...s[index], read: true } }));
+  }
+  function sendReply() {
+    if (!reply.trim() || selected === null) return;
+    setMessages(m => [...m, { person: selected, text: reply.trim(), time: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) }]);
+    setReply('');
+    try { localStorage.removeItem(`sendar-draft-${selected}`); } catch { /* unavailable */ }
+    notify('Demo reply added to this conversation. No email sent.');
+  }
+  useEffect(() => {
+    try { setReply(selected === null ? '' : localStorage.getItem(`sendar-draft-${selected}`) || ''); } catch { setReply(''); }
+  }, [selected]);
+  useEffect(() => {
+    threadEnd.current?.scrollIntoView({ behavior: window.matchMedia('(prefers-reduced-motion: reduce)').matches ? 'instant' : 'smooth', block: 'nearest' });
+  }, [selected, messages]);
+  useEffect(() => {
+    function shortcut(e: KeyboardEvent) {
+      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'k') {
+        e.preventDefault(); setCommand(''); setModal(m => m === 'Quick navigation' ? '' : 'Quick navigation');
+      }
+    }
+    window.addEventListener('keydown', shortcut);
+    return () => { window.removeEventListener('keydown', shortcut); if (toastTimer.current) clearTimeout(toastTimer.current); };
+  }, []);
+  function go(to: string) { setPage(to); setSearch(''); setSelected(null); }
+  const activeCampaigns = demo ? campaigns : [];
+  const totalSent = activeCampaigns.reduce((n, c) => n + c.sent, 0);
+  const active = activeCampaigns.filter(c => c.status !== 'Complete');
+  const filteredPeople = demo ? people.filter((p, i) => {
+    const state = threadState[i] || {};
+    const matchesFolder = folder === 'Archived' ? state.archived
+      : folder === 'Snoozed' ? state.snoozed && !state.archived
+      : !state.archived && !state.snoozed && (folder === 'All replies' || (folder === 'Unread' ? !state.read : (state.interested ? 'Interested' : p.tag) === folder));
+    return matchesFolder && `${p.name} ${p.company} ${p.subject}`.toLowerCase().includes(search.toLowerCase());
+  }) : [];
+  async function importFile(file?: File) {
+    if (!file) return;
+    const lines = (await file.text()).split(/\r?\n/).filter(Boolean);
+    const emails = lines.flatMap(l => l.match(/[\w.+-]+@[\w.-]+\.[A-Za-z]{2,}/g) || []);
+    const unique = [...new Set(emails)];
+    setBatches(b => [...b, { name: file.name, count: unique.length, invalid: Math.max(0, lines.length - unique.length - (lines[0]?.includes('email') ? 1 : 0)) }]);
+    setModal(''); notify(`Imported ${unique.length} unique leads locally. No emails will be sent.`);
+  }
+  const close = useCallback(() => setModal(''), []);
+  const person = people[selected ?? 0];
+  const input = 'mt-2 min-h-11 w-full rounded-lg border border-[var(--line)] bg-[var(--surface)] p-3 text-sm outline-none focus:ring-2 focus:ring-blue-500';
+  return <div style={{ '--surface': dark ? '#151d2e' : '#ffffff', '--canvas': dark ? '#0c1322' : '#f8f9fc', '--line': dark ? '#2a354a' : '#e8ebf1', '--muted': dark ? '#b5c0d3' : '#697386', '--hover': dark ? '#202c43' : '#f4f6fa' } as React.CSSProperties} className={`min-h-screen overflow-x-hidden bg-[var(--canvas)] font-sans text-sm antialiased transition-colors duration-300 motion-reduce:transition-none [&_button]:cursor-pointer [&_button]:transition-[background-color,color,transform,box-shadow] [&_button]:duration-200 [&_button]:focus-visible:outline-none [&_button]:focus-visible:ring-2 [&_button]:focus-visible:ring-blue-500 [&_button:disabled]:cursor-not-allowed [&_button:disabled]:saturate-0 [&_button]:active:scale-[0.98] motion-reduce:[&_button]:transform-none ${dark ? 'text-slate-100' : 'text-[#17233c]'}`}>
+    <aside className={`fixed inset-y-0 left-0 z-30 hidden flex-col border-r border-[var(--line)] bg-[var(--surface)] p-4 transition-[width] duration-300 ease-in-out motion-reduce:transition-none md:flex ${collapsed ? 'w-[80px]' : 'w-[232px]'}`}>
+      <div className="flex h-16 items-start justify-between px-2">{collapsed ? <button onClick={() => setCollapsed(false)} className={button} aria-label="Expand sidebar"><Icon name="menu" /></button> : <><Logo /><button className="mt-2 text-[var(--muted)]" onClick={() => setCollapsed(true)} aria-label="Collapse sidebar"><Icon name="menu" className="!h-4 !w-4" /></button></>}</div>
+      {!collapsed && <div className="mb-5 mt-3 px-3 text-xs font-medium tracking-[1.4px] text-[var(--muted)]">WORKSPACE</div>}
+      <nav className="space-y-1">{navigation.map(n => <button key={n.label} onClick={() => go(n.label)} aria-label={n.label} className={`flex min-h-11 w-full items-center gap-3 rounded-lg px-3 text-left font-medium transition focus-visible:ring-2 focus-visible:ring-blue-500 ${page === n.label ? 'bg-[#edf1ff] text-[#1237e8]' : 'text-[var(--muted)] hover:bg-[var(--hover)]'}`}><Icon name={n.icon} />{!collapsed && <><span className="flex-1">{n.label}</span>{n.label === 'Inbox' && demo && <span className="rounded-md bg-[#1237e8] px-1.5 py-0.5 text-xs text-white">{people.length}</span>}</>}</button>)}</nav>
+      <div className="mt-auto">{!collapsed && <div className="mb-5 rounded-xl border border-[var(--line)] bg-[var(--canvas)] p-4"><div className="flex items-center justify-between font-semibold">A little more room <span className="text-blue-700">↗</span></div><p className="mt-2 text-xs leading-5 text-[var(--muted)]">More mailboxes. More possibilities.</p><button className={`${button} mt-3 w-full !min-h-9 !text-xs`} onClick={() => setModal('Your plan')}>Explore Pro <Icon name="arrow" className="!h-3.5 !w-3.5" /></button></div>}<button onClick={() => setModal('Workspace profile')} className="flex min-h-14 w-full items-center gap-3 border-t border-[var(--line)] pt-4 text-left"><div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-[#e9e7fa] font-semibold text-[#5b4b8a]">AC</div>{!collapsed && <><div className="flex-1"><div className="font-semibold">Alex Carter</div><div className="mt-0.5 text-xs text-[var(--muted)]">Starter plan</div></div><Icon name="more" /></>}</button></div>
+    </aside>
+    <div className={`${collapsed ? 'md:ml-[80px]' : 'md:ml-[232px]'} pb-20 transition-[margin] duration-300 ease-in-out motion-reduce:transition-none md:pb-0`}>
+      <header className="flex h-[76px] items-center justify-between gap-4 border-b border-[var(--line)] bg-[var(--surface)] px-5 lg:px-8">
+        <button className="flex min-h-11 items-center gap-2.5 font-semibold" onClick={() => setModal('Switch workspace')}><span className="flex h-8 w-8 items-center justify-center rounded-lg border border-[var(--line)] bg-[var(--canvas)] text-xs">S</span><span className="hidden sm:inline">Studio workspace</span><Icon name="chevron" className="!h-3.5 !w-3.5 rotate-90" /></button>
+        <div className="hidden max-w-[330px] flex-1 items-center gap-2 rounded-lg border border-[var(--line)] bg-[var(--canvas)] px-3 lg:flex"><Icon name="search" className="text-[var(--muted)]" /><input onKeyDown={e => { if (e.key === 'Escape') setSearch(''); }} value={search} onChange={e => { setSearch(e.target.value); if (page !== 'Inbox' && page !== 'Leads') setPage('Inbox'); }} placeholder="Search your workspace..." aria-label="Global search" className="min-h-10 min-w-0 flex-1 bg-transparent text-sm outline-none" /><button aria-label="Open quick navigation" onClick={() => { setCommand(''); setModal('Quick navigation'); }} className="min-h-9 rounded border border-[var(--line)] px-1.5 text-xs text-[var(--muted)]">⌘ K</button></div>
+        <div className="flex items-center gap-1"><button onClick={() => setDemo(!demo)} className="mr-2 min-h-11 rounded-md px-2 text-xs font-medium text-[var(--muted)]">{demo ? 'Demo workspace' : 'Empty workspace'} <span className="text-blue-600">↔</span></button>{(['help', dark ? 'sun' : 'moon', 'bell'] as IconName[]).map(i => <button key={i} aria-label={i === 'moon' || i === 'sun' ? 'Toggle theme' : i} onClick={() => i === 'moon' || i === 'sun' ? setDark(!dark) : setModal(i === 'bell' ? 'Notifications' : 'Help & resources')} className="flex h-11 w-11 items-center justify-center rounded-lg text-[var(--muted)] hover:bg-[var(--hover)]"><Icon name={i} /></button>)}<button aria-label="User profile" onClick={() => setModal('Workspace profile')} className="ml-2 hidden h-9 w-9 rounded-full bg-[#e9e7fa] text-xs font-semibold text-[#5b4b8a] sm:block">AC</button></div>
+      </header>
+      <main key={page} className={`motion-safe:animate-[arrive_240ms_ease-out] ${page === 'Inbox' ? '' : 'mx-auto max-w-[1600px] p-5 lg:px-8 lg:py-8'}`}>
+        {page !== 'Inbox' && <div className="mb-7 flex flex-wrap items-center justify-between gap-4"><div><div className="mb-1.5 flex items-center gap-2 text-xs text-[var(--muted)]"><span>Workspace</span><Icon name="chevron" className="!h-3 !w-3" /><span>{page}</span></div><h1 className="text-[28px] font-semibold tracking-[-1px]">{page === 'Overview' ? 'Good morning, Alex' : page}<span className="text-[#1237e8]">{page === 'Overview' ? '.' : ''}</span></h1><p className="mt-1.5 text-[var(--muted)]">{({ Overview: 'Your outreach, in a good place. Here’s what’s happening today.', Sending: 'Every send accounted for. Every next step in view.', Leads: 'Good conversations start with the right people.', 'Scouting Plans': 'Thoughtful outreach, built around your next opportunity.', Accounts: 'Your mailboxes, connected and protected.', Analytics: 'A clearer view of your outreach performance.', Settings: 'Make Sendar work your way.' } as Record<string, string>)[page]}</p></div><div className="flex gap-2">{page === 'Overview' && <button className={button} onClick={() => setModal('Reporting date')}><Icon name="clock" />Today<Icon name="chevron" className="!h-3 !w-3 rotate-90" /></button>}<button className={primary} onClick={() => setModal(page === 'Leads' ? 'Import leads' : page === 'Accounts' ? 'Connect Google account' : page === 'Scouting Plans' ? 'Create scouting plan' : page === 'Settings' ? 'Save settings' : 'Start campaign')}><Icon name="plus" />{page === 'Leads' ? 'Import leads' : page === 'Accounts' ? 'Connect account' : page === 'Scouting Plans' ? 'Create plan' : page === 'Settings' ? 'Save changes' : page === 'Sending' ? 'Initiate sending' : 'Start campaign'}</button></div></div>}
+        {page === 'Overview' && <>
+          <div className="mb-6 grid gap-4 sm:grid-cols-2 xl:grid-cols-4">{[
+            { label: 'Emails sent today', value: totalSent, icon: 'send', detail: 'Confirmed sends across your mailboxes', tone: 'blue' },
+            { label: 'Replies today', value: demo ? people.length : 0, icon: 'inbox', detail: demo ? '2 interested · 1 needs a reply' : 'Waiting for your first conversation', tone: 'green' },
+            { label: 'Active campaigns', value: active.length, icon: 'plan', detail: demo ? '1 sending · 1 scheduled · 1 waiting' : 'Ready when you are', tone: 'violet' },
+            { label: 'Mailbox health', value: demo ? '100%' : '—', icon: 'shield', detail: demo ? '4 of 4 mailboxes connected' : 'Connect your first Google account', tone: 'green' },
+          ].map(k => <div key={k.label} className={`${panel} p-5`}><div className="flex items-center justify-between text-[var(--muted)]"><span className="font-medium">{k.label}</span><span className={`rounded-lg p-2 ${k.tone === 'blue' ? 'bg-blue-50 text-blue-700' : k.tone === 'green' ? 'bg-emerald-50 text-emerald-700' : 'bg-violet-50 text-violet-700'}`}><Icon name={k.icon as IconName} /></span></div><div className="mb-3 mt-3 text-[34px] font-semibold leading-none tracking-[-1.5px]">{k.value}</div><div className="text-xs text-[var(--muted)]">{k.detail}</div></div>)}</div>
+          <div className="mb-6 flex items-center gap-3 rounded-lg border border-[#e6dfc5] bg-[#fffdf5] px-4 py-3.5 text-[#67551f]"><span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-[#fff3cb]"><Icon name="clock" /></span><div className="flex-1"><span className="font-semibold">A short pause. A safer send.</span><span className="ml-1.5 text-sm">{demo ? 'Founder introductions is waiting for sender capacity. Resumes automatically at 11:30 AM.' : 'Connect a mailbox to enable safe, capacity-aware sending.'}</span></div><button className="flex min-h-11 items-center gap-2 whitespace-nowrap font-medium" onClick={() => go('Sending')}>View details<Icon name="arrow" /></button></div>
+          <div className="grid items-start gap-6 xl:grid-cols-[minmax(0,1fr)_310px]">
+            <div className="min-w-0 space-y-6">
+              <section className={panel}><div className="flex items-center justify-between p-5"><div><h2 className="text-base font-semibold">Campaign progress</h2><p className="mt-1 text-xs text-[var(--muted)]">Real progress. No guesswork.</p></div><button className="flex min-h-11 items-center gap-2 text-xs font-medium text-[var(--muted)]" onClick={() => go('Sending')}>View all<Icon name="arrow" className="!h-4 !w-4" /></button></div>
+                {activeCampaigns.length ? activeCampaigns.map((c, i) => <button key={c.name} onClick={() => { setPage('Sending'); setModal(`Campaign: ${c.name}`); }} className={`flex w-full flex-wrap items-center gap-4 border-t border-[var(--line)] px-5 py-[18px] text-left transition hover:bg-[var(--hover)] ${i === 3 ? 'rounded-b-xl' : ''}`}><div className={`flex h-10 w-10 shrink-0 items-center justify-center rounded-lg ${i === 0 ? 'bg-blue-50 text-blue-700' : i === 1 ? 'bg-violet-50 text-violet-700' : i === 2 ? 'bg-orange-50 text-orange-700' : 'bg-emerald-50 text-emerald-700'}`}><Icon name={i === 3 ? 'check' : i === 1 ? 'clock' : 'send'} /></div><div className="min-w-[170px] flex-1"><div className="font-semibold">{c.name}</div><div className="mt-1.5 text-xs text-[var(--muted)]">{c.detail}</div></div><div className="w-[145px]"><div className="mb-2 flex justify-between text-xs"><span className="font-medium">{c.sent}<span className="font-normal text-[var(--muted)]"> / {c.total} sent</span></span><span className="text-[var(--muted)]">{Math.round(c.sent / c.total * 100)}%</span></div><div className="h-1.5 overflow-hidden rounded-full bg-[var(--line)]"><div style={{ width: `${c.sent / c.total * 100}%` }} className={`h-full rounded-full ${i === 3 ? 'bg-emerald-500' : 'bg-[#2348ed]'}`} /></div></div><div className="w-[153px] text-right"><Badge tone={c.color}>{c.status}</Badge></div></button>) : <Empty icon="send" title="Your first campaign starts here" description="Connect a mailbox, add leads, and start a meaningful conversation." action="Start campaign" onClick={() => setModal('Start campaign')} />}
+              </section>
+              <section className={panel}><div className="flex flex-wrap items-center justify-between gap-3 px-5 pt-5"><div><h2 className="text-base font-semibold">Outreach at a glance</h2><p className="mt-1 text-xs text-[var(--muted)]">Steady connections. Meaningful replies.</p></div><select aria-label="Chart period" value={period} onChange={e => setPeriod(e.target.value)} className={`${button} !min-h-9 !px-2 !text-xs`}><option>Last 7 days</option><option>Last 14 days</option></select></div><div className="flex items-center gap-5 px-5 pt-5 text-xs text-[var(--muted)]"><span className="flex items-center gap-2"><span className="h-2 w-2 rounded-full bg-blue-600" />Emails sent</span><span className="flex items-center gap-2"><span className="h-2 w-2 rounded-full bg-emerald-500" />Replies received</span></div><Chart demo={demo} long={period === 'Last 14 days'} /></section>
+            </div>
+            <div className="space-y-6"><section className={panel}><div className="flex items-center justify-between border-b border-[var(--line)] p-5"><h2 className="text-base font-semibold">Latest replies</h2><Badge tone="blue">Today</Badge></div>{(demo ? people.slice(0, 3) : []).map((p, i) => <button key={p.name} onClick={() => { go('Inbox'); setSelected(i); }} className="flex w-full gap-3 border-b border-[var(--line)] p-4 text-left hover:bg-[var(--hover)]"><span className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-full text-xs font-medium ${p.color}`}>{p.initials}</span><div className="min-w-0 flex-1"><div className="flex items-center justify-between gap-1"><span className="font-semibold">{p.name}</span><span className="text-xs text-[var(--muted)]">{i * 14 + 8}m</span></div><p className="mt-1 truncate text-xs text-[var(--muted)]">{p.preview}</p><div className="mt-2"><Badge tone={i === 1 ? 'amber' : 'green'}>{p.tag}</Badge></div></div></button>)}{!demo && <p className="p-5 text-[var(--muted)]">No replies today.</p>}<button className="flex min-h-12 w-full items-center justify-center gap-2 text-xs font-semibold text-[#2449db]" onClick={() => go('Inbox')}>Open unified inbox<Icon name="arrow" className="!h-4 !w-4" /></button></section>
+              <section className={panel}><div className="flex items-center justify-between p-5 pb-3"><h2 className="text-base font-semibold">Ready for the next hello</h2><Icon name="users" className="text-[var(--muted)]" /></div><div className="px-5 text-[32px] font-semibold tracking-tight">{demo ? '1,248' : batches.reduce((n, b) => n + b.count, 0)} <span className="text-xs font-normal tracking-normal text-[var(--muted)]">leads ready to contact</span></div><p className="px-5 pt-2 text-xs leading-5 text-[var(--muted)]">Your next great connection could be one conversation away.</p><button className="m-5 mt-4 flex min-h-9 items-center gap-2 text-xs font-semibold text-[#2449db]" onClick={() => go('Leads')}>Explore your leads<Icon name="arrow" className="!h-4 !w-4" /></button></section>
+              <div className="flex gap-3 px-1 text-xs leading-5 text-[var(--muted)]"><Icon name="shield" className="mt-0.5 text-emerald-700" /><p>Built for thoughtful outreach.<br />Sending limits and quiet hours are always respected.</p></div>
+            </div>
+          </div>
+        </>}
+        {page === 'Inbox' && <div className="flex h-[calc(100dvh-76px)] min-h-[600px]">
+          <div className="hidden w-[180px] shrink-0 border-r border-[var(--line)] bg-[var(--surface)] p-4 xl:block"><h1 className="mb-6 px-2 pt-3 text-xl font-semibold">Inbox</h1>{['All replies', 'Unread', 'Needs reply', 'Interested', 'Follow-up', 'Snoozed', 'Archived'].map(f => <button key={f} onClick={() => { setFolder(f); setSelected(null); }} className={`mb-1 flex min-h-11 w-full items-center gap-2 rounded-lg px-3 text-left ${folder === f ? 'bg-blue-50 font-medium text-blue-700' : 'text-[var(--muted)] hover:bg-[var(--hover)]'}`}><Icon name={f === 'Archived' ? 'archive' : 'inbox'} />{f}</button>)}<p className="mt-8 px-2 text-xs leading-5 text-[var(--muted)]">A fresh inbox, every day.<br />Only today’s inbound replies appear here.</p></div>
+          <div className={`${selected !== null ? 'hidden lg:block' : 'block'} w-full shrink-0 border-r border-[var(--line)] bg-[var(--surface)] lg:w-[330px]`}><div className="border-b border-[var(--line)] p-5"><div className="mb-4 flex items-center justify-between"><h2 className="text-lg font-semibold">{folder}</h2><Badge tone="blue">Today</Badge></div><div className="flex items-center gap-2 rounded-lg border border-[var(--line)] px-3"><Icon name="search" /><input className="min-h-11 min-w-0 w-full bg-transparent outline-none" aria-label="Search conversations" placeholder="Search conversations" value={search} onChange={e => setSearch(e.target.value)} /></div><select aria-label="Inbox filter" className="mt-3 min-h-11 w-full bg-[var(--surface)] xl:hidden" value={folder} onChange={e => setFolder(e.target.value)}>{['All replies', 'Unread', 'Needs reply', 'Interested', 'Follow-up', 'Snoozed', 'Archived'].map(f => <option key={f}>{f}</option>)}</select></div>{filteredPeople.length ? filteredPeople.map(p => <button key={p.name} onClick={() => selectThread(people.indexOf(p))} className={`flex w-full gap-3 border-b border-[var(--line)] p-5 text-left ${people.indexOf(p) === selected ? 'border-l-[3px] border-l-blue-600 bg-blue-50/60' : 'hover:bg-[var(--hover)]'}`}><span className={`flex h-10 w-10 shrink-0 items-center justify-center rounded-full text-xs font-semibold ${p.color}`}>{p.initials}</span><div className="min-w-0 flex-1"><div className="flex justify-between gap-2"><span className="font-semibold">{p.name}</span><span className="text-xs text-[var(--muted)]">{p.time}</span></div><p className="mt-1 text-xs text-[var(--muted)]">{p.company}</p><p className="mt-2 truncate font-medium">{p.subject}</p><p className="mt-1 truncate text-xs text-[var(--muted)]">{p.preview}</p><div className="mt-3 flex items-center justify-between gap-1"><Badge tone={(threadState[people.indexOf(p)]?.interested || p.tag === 'Interested') ? 'green' : 'amber'}>{threadState[people.indexOf(p)]?.interested ? 'Interested' : p.tag}</Badge><span className="text-xs text-[var(--muted)]">alex@studio.co</span></div></div></button>) : <Empty icon="inbox" title="No replies today" description="Your active replies will appear here when prospects respond." />}</div>
+          <div className={`${selected === null ? 'hidden lg:flex' : 'flex'} min-w-0 flex-1 flex-col`}>
+            {selected === null ? <div className="m-auto"><Empty icon="inbox" title="A space for real conversations" description="Select a reply to pick up where you left off." /></div> : <><div className="flex flex-wrap items-center justify-between gap-3 border-b border-[var(--line)] bg-[var(--surface)] p-5"><div className="flex items-center gap-3"><button aria-label="Back to conversations" className={`${button} !px-2 lg:hidden`} onClick={() => setSelected(null)}>←</button><div><h2 className="font-semibold">{person.name} <span className="font-normal text-[var(--muted)]">· {person.company}</span></h2><p className="mt-1 text-xs text-[var(--muted)]">{person.name.split(' ')[0].toLowerCase()}@{person.company.toLowerCase()}.co</p></div></div><div className="flex gap-1">{(['archive', 'clock', 'more'] as IconName[]).map(i => <button key={i} className={`${button} !px-3`} aria-label={i === 'clock' ? 'Snooze conversation' : i} onClick={() => i === 'archive' ? (updateThread({ archived: !threadState[selected]?.archived }), setSelected(null), notify('Conversation archive updated.')) : setModal('Conversation actions')}><Icon name={i} /></button>)}</div><div className="w-full text-xs text-[var(--muted)]">{threadState[selected]?.owner && <span className="mr-3">Owner: {threadState[selected].owner}</span>}Q3 brand partnerships <span className="px-2">/</span> Sent from alex@studio.co</div></div><div className="flex-1 space-y-6 overflow-y-auto p-5 lg:p-8"><div className="text-center text-xs text-[var(--muted)]">Today</div><div className="ml-auto max-w-[85%] rounded-2xl rounded-br-sm border border-blue-100 bg-[#edf2ff] p-4 text-slate-800"><p className="leading-6">Hi {person.name.split(' ')[0]}, I’ve been following {person.company} and love what you’re building. I think there’s a great opportunity for us to work together. Would you be open to a conversation?</p><p className="mt-3 text-right text-xs text-slate-600">9:15 AM · Delivered ✓✓</p></div><div className="max-w-[85%] rounded-2xl rounded-bl-sm border border-[var(--line)] bg-[var(--surface)] p-4"><p className="leading-6">{person.preview.replace('…', ' some more details?')} What did you have in mind?</p><p className="mt-3 text-xs text-[var(--muted)]">{person.time}</p></div>{messages.filter(m => m.person === selected).map((m, i) => <div key={i} className="motion-safe:animate-[arrive_200ms_ease-out] ml-auto max-w-[85%] rounded-2xl rounded-br-sm bg-[#1237e8] p-4 text-white"><p>{m.text}</p><p className="mt-2 text-right text-xs">{m.time} · Demo only</p></div>)}<div ref={threadEnd} /></div><div className="m-4 mt-0 rounded-xl border border-[var(--line)] bg-[var(--surface)] p-4"><p className="text-xs text-[var(--muted)]">Replying from: <strong className="font-medium">alex@studio.co</strong></p><textarea aria-label="Write your reply" onKeyDown={e => { if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') { e.preventDefault(); sendReply(); } }} value={reply} onChange={e => setReply(e.target.value)} placeholder={`Write a reply to ${person.name.split(' ')[0]}…`} className="mt-3 min-h-24 w-full resize-none bg-transparent outline-none" /><div className="flex items-center justify-between"><div className="flex gap-1">{['B', '↗', '☺', 'Template'].map(t => <button key={t} aria-label={t === 'B' ? 'Insert bold formatting' : t} className="min-h-11 min-w-11 rounded-md px-2 text-[var(--muted)] hover:bg-[var(--hover)]" onClick={() => setReply(r => r + (t === 'Template' ? 'Thanks for getting back to me! Would Tuesday work for a quick call?' : t === '☺' ? ' :)' : t === 'B' ? '**text**' : ' [attachment — prototype]'))}>{t}</button>)}</div><button className={primary} disabled={!reply.trim()} onClick={sendReply}>Send reply<Icon name="send" /></button></div><button className="mt-2 min-h-9 text-xs text-[var(--muted)]" onClick={() => { try { localStorage.setItem(`sendar-draft-${selected}`, reply); notify('Draft saved in this browser.'); } catch { notify('Unable to save draft.'); } }}>Save draft</button></div></>}
+          </div>
+        </div>}
+        {page === 'Sending' && <><div className="mb-5 flex flex-wrap gap-3">{['Confirmed sent', 'Queued', 'Failed', 'Needs review'].map((s, i) => <div className={`${panel} min-w-[150px] flex-1 p-5`} key={s}><p className="text-[var(--muted)]">{s}</p><p className="mt-3 text-3xl font-semibold">{activeCampaigns.reduce((n, c) => n + [c.sent, c.queued, c.failed, c.review][i], 0)}</p></div>)}</div><div className={panel}>{activeCampaigns.length ? activeCampaigns.map(c => <div key={c.name} className="flex flex-wrap items-center gap-4 border-b border-[var(--line)] p-5"><div className="min-w-[220px] flex-1"><h3 className="font-semibold">{c.name}</h3><p className="mt-2 text-xs text-[var(--muted)]">{c.sent}/{c.total} confirmed · {c.queued} queued · {c.failed} failed · {c.review} awaiting review</p><div className="mt-3 h-1.5 rounded bg-[var(--line)]"><div className="h-full rounded bg-blue-600" style={{ width: `${c.sent / c.total * 100}%` }} /></div>{c.status.includes('capacity') && <p className="mt-3 text-xs leading-5 text-amber-700">Provider cooldown. Next retry today at 11:30 AM, workspace time. Sending resumes automatically when an eligible account is available. Google limits cannot be bypassed.</p>}</div><Badge tone={c.color}>{c.status}</Badge><button className={button} onClick={() => setModal(`${c.status === 'Paused' ? 'Resume' : 'Pause'} campaign: ${c.name}`)}>{c.status === 'Paused' ? 'Resume' : 'Pause'}</button><button className={button} onClick={() => setModal(`Campaign: ${c.name}`)}>Review</button></div>) : <Empty icon="send" title="No active campaign" description="Your sending activity will appear after you launch a campaign." action="Start campaign" onClick={() => setModal('Start campaign')} />}</div><div className={`${panel} mt-6 p-5`}><h2 className="text-base font-semibold">Delivery activity</h2><p className="mt-3 text-[var(--muted)]">No individual delivery events in this prototype. Live activity will include recipient, sending mailbox, scouting plan, status, timestamp, and error reason.</p></div></>}
+        {page === 'Leads' && <><div onDragOver={e => e.preventDefault()} onDrop={e => { e.preventDefault(); importFile(e.dataTransfer.files[0]); }} className={`${panel} mb-6 flex flex-col items-center border-dashed p-9 text-center`}><span className="mb-4 rounded-xl bg-blue-50 p-3 text-blue-700"><Icon name="upload" /></span><h2 className="text-lg font-semibold">Your next connection starts here</h2><p className="mb-4 mt-2 text-[var(--muted)]">Drop a CSV or TXT file. Email required; name and store optional.</p><button className={button} onClick={() => fileRef.current?.click()}>Choose file</button><input ref={fileRef} type="file" accept=".csv,.txt" className="hidden" onChange={e => importFile(e.target.files?.[0])} /></div><div className={panel}><div className="border-b border-[var(--line)] p-5 text-base font-semibold">Lead batches <span className="ml-2 text-sm text-[var(--muted)]">{batches.length}</span></div>{batches.length ? batches.map((b, i) => <div key={`${b.name}-${i}`} className="flex flex-wrap items-center justify-between gap-3 border-b border-[var(--line)] p-5"><div><h3 className="font-semibold">{b.name}</h3><p className="mt-1 text-xs text-[var(--muted)]">{b.count} valid leads · {b.invalid} invalid / duplicate · Imported today · Unassigned</p></div><button className={`${button} text-red-700`} onClick={() => setModal(`Delete batch:${i}`)}>Delete batch</button></div>) : <Empty icon="users" title="A clean slate for your next opportunity" description="Import a lead list to organize contacts into batches. No leads have been added to this browser." />}</div></>}
+        {page === 'Scouting Plans' && <div className="grid gap-5 md:grid-cols-2 xl:grid-cols-3">{plans.map(p => <button key={p} onClick={() => { setPlanName(p); setModal('Edit scouting plan'); }} className={`${panel} p-6 text-left`}><Icon name="plan" className="mb-5 text-blue-700" /><h2 className="text-lg font-semibold">{p}</h2><p className="my-3 text-[var(--muted)]">Created locally · No enrollments</p><Badge tone="violet">Draft</Badge></button>)}{!plans.length && <div className={`${panel} col-span-full`}><Empty icon="plan" title="A thoughtful plan goes a long way" description="Create your first scouting plan. Personalize your message, choose your senders, and reach out at the right time." action="Create your first plan" onClick={() => setModal('Create scouting plan')} /></div>}</div>}
+        {page === 'Accounts' && <><div className="mb-6 rounded-xl border border-blue-200 bg-blue-50 p-5 text-blue-900"><div className="flex items-center gap-2 font-semibold"><Icon name="shield" />Connected through Google. Secured by design.</div><p className="mt-2 leading-6">Sendar uses Google OAuth—not app passwords. You choose which accounts to connect and can revoke access at any time.</p></div><div className="grid gap-5 lg:grid-cols-2">{(demo ? ['alex@studio.co', 'hello@studio.co', 'partners@studio.co', 'outreach@studio.co'].filter(e => !removedAccounts.includes(e)) : []).map((email, i) => <section key={email} className={`${panel} p-6`}><div className="flex items-center justify-between gap-3"><div className="flex items-center gap-3"><div className="flex h-10 w-10 items-center justify-center rounded-lg border border-[var(--line)] text-xl font-semibold text-blue-600">G</div><h2 className="font-semibold">{email}</h2></div><Badge tone={pausedAccounts.includes(email) ? 'amber' : 'green'}>{pausedAccounts.includes(email) ? 'Paused' : 'Connected'}</Badge></div><div className="my-5 grid grid-cols-3 gap-4 text-xs text-[var(--muted)]"><div>Last sync<p className="mt-2 font-medium">2 minutes ago</p></div><div>Rolling 24h<p className="mt-2 font-medium">{[40, 32, 18, 24][i]} / 100</p></div><div>Health<p className="mt-2 font-medium text-emerald-700">Healthy</p></div></div><div className="flex flex-wrap gap-2"><button className={button} aria-pressed={pausedAccounts.includes(email)} onClick={() => { setPausedAccounts(a => a.includes(email) ? a.filter(v => v !== email) : [...a, email]); notify(`Sending preference updated for ${email}.`); }}>{pausedAccounts.includes(email) ? 'Resume' : 'Pause'} sending</button><button className={button} onClick={() => setModal('Connect Google account')}>Reconnect</button><button className={`${button} text-red-700`} onClick={() => { setTargetAccount(email); setModal('Remove account'); }}>Remove</button></div></section>)}</div>{!demo && <Empty icon="accounts" title="Your mailboxes. One home." description="Connect your first Google account to bring your outreach together." action="Connect Google account" onClick={() => setModal('Connect Google account')} />}<div className={`${panel} mt-6 p-5`}><h2 className="font-semibold">For Google Workspace administrators</h2><p className="mt-2 text-[var(--muted)]">Optional domain-wide deployment can be added later. Individual OAuth connections are all you need to get started.</p></div></>}
+        {page === 'Analytics' && <section className={panel}><div className="p-6"><h2 className="text-lg font-semibold">Outreach performance</h2><p className="mt-2 text-[var(--muted)]">{demo ? `${totalSent} confirmed sends across ${campaigns.length} demo campaigns.` : 'Your real performance will appear after your first campaign.'}</p></div><Chart demo={demo} long={false} /></section>}
+        {page === 'Settings' && <div className="max-w-3xl space-y-5">{[{ title: 'Workspace & profile', fields: ['Workspace name', 'Your name'] }, { title: 'Sending safety', fields: ['Default account cap', 'Daily workspace cap', 'Quiet hours', 'Timezone'] }, { title: 'Notifications & compliance', fields: ['Reply notifications', 'Unsubscribe footer'] }].map(section => <section key={section.title} className={`${panel} p-6`}><h2 className="mb-5 text-base font-semibold">{section.title}</h2><div className="grid gap-5 sm:grid-cols-2">{section.fields.map((f, i) => <label key={f} className="text-sm text-[var(--muted)]">{f}<input className={input} value={settings[f] ?? (section.title === 'Workspace & profile' ? ['Studio workspace', 'Alex Carter'][i] : section.title === 'Sending safety' ? ['100', '400', '18:00 – 09:00', 'America/New_York'][i] : ['Enabled', 'Reply unsubscribe to opt out'][i])} onChange={e => setSettings(s => ({ ...s, [f]: e.target.value }))} /></label>)}</div></section>)}<section className={`${panel} flex flex-wrap items-center justify-between gap-4 p-6`}><div><h2 className="font-semibold">Security & connected apps</h2><p className="mt-1 text-[var(--muted)]">Manage access through your Google account.</p></div><button className={button} onClick={() => go('Accounts')}>Manage accounts</button></section><section className={`${panel} border-red-200 p-6`}><h2 className="font-semibold text-red-700">Danger zone</h2><button className={`${button} mt-4 text-red-700`} onClick={() => setModal('Reset local workspace')}>Reset local workspace</button></section></div>}
+        {page !== 'Inbox' && <footer className="mt-7 flex flex-wrap items-center justify-between gap-3 text-xs text-[var(--muted)]"><span className="flex items-center gap-1.5"><span className="h-1.5 w-1.5 rounded-full bg-emerald-500" />{demo ? 'Demo data · No live mailboxes connected' : 'Local preview · No live mailboxes connected'}</span><span>Thoughtful outreach. Real connections.</span></footer>}
+      </main>
+    </div>
+    <nav className="fixed inset-x-0 bottom-0 z-40 flex justify-around border-t border-[var(--line)] bg-[var(--surface)] px-2 pb-[env(safe-area-inset-bottom)] md:hidden">{navigation.slice(0, 5).map(n => <button key={n.label} aria-label={n.label} onClick={() => go(n.label)} className={`flex min-h-[65px] flex-1 flex-col items-center justify-center gap-1 text-xs ${page === n.label ? 'text-blue-600' : 'text-[var(--muted)]'}`}><Icon name={n.icon} />{n.label === 'Scouting Plans' ? 'Plans' : n.label}</button>)}<button aria-label="More navigation" onClick={() => setModal('More sections')} className="flex min-h-[65px] flex-1 flex-col items-center justify-center gap-1 text-xs"><Icon name="more" />More</button></nav>
+    {toast && <div role="status" className="motion-safe:animate-[arrive_220ms_ease-out] fixed bottom-24 left-1/2 z-[60] flex max-w-[90vw] -translate-x-1/2 items-center gap-3 rounded-xl bg-[#152344] px-5 py-4 text-sm text-white shadow-lg md:bottom-7"><Icon name="check" />{toast}</div>}
+    {modal && <Modal title={modal.startsWith('Delete batch:') ? 'Delete this lead batch?' : modal} close={close}>
+      {modal === 'Quick navigation' ? <><div className="mb-4 flex items-center gap-2 rounded-lg border border-[var(--line)] px-3"><Icon name="search" /><input aria-label="Find a page" placeholder="Where would you like to go?" className="min-h-12 w-full bg-transparent outline-none" value={command} onChange={e => setCommand(e.target.value)} onKeyDown={e => { if (e.key === 'Enter') { const match = navigation.find(n => n.label.toLowerCase().includes(command.toLowerCase())); if (match) { go(match.label); close(); } } }} /></div><div className="space-y-1">{navigation.filter(n => n.label.toLowerCase().includes(command.toLowerCase())).map(n => <button key={n.label} className={`${button} w-full !justify-start !border-transparent`} onClick={() => { go(n.label); close(); }}><Icon name={n.icon} />{n.label}<Icon name="arrow" className="ml-auto" /></button>)}</div><p className="mt-4 text-xs text-[var(--muted)]">Enter to open the first match · Esc to close</p></> : modal === 'Lead profile' ? <><div className="mb-4 flex items-center gap-3"><span className={`flex h-12 w-12 items-center justify-center rounded-full font-semibold ${person.color}`}>{person.initials}</span><div><h3 className="text-lg font-semibold">{person.name}</h3><p className="text-[var(--muted)]">{person.company}</p></div></div><p className="mb-4">{person.name.split(' ')[0].toLowerCase()}@{person.company.toLowerCase()}.co</p><Badge tone="blue">Q3 brand partnerships</Badge><p className="mt-4 text-[var(--muted)]">Demo contact · {selected !== null && threadState[selected]?.owner ? `Assigned to ${threadState[selected].owner}` : 'Unassigned'}</p></> : modal === 'Start campaign' ? <><p className="mb-5 leading-6 text-[var(--muted)]">Great outreach starts with a connected mailbox, a lead batch, and a scouting plan. This preview never sends live email.</p>{['Connect a Google account', 'Import your leads', 'Build a scouting plan'].map((t, i) => <button key={t} className={`${button} mb-3 w-full !justify-between`} onClick={() => { go(['Accounts', 'Leads', 'Scouting Plans'][i]); close(); }}><span><span className="mr-3 text-blue-600">0{i + 1}</span>{t}</span><Icon name="arrow" /></button>)}</> :
+      modal.includes('scouting plan') ? <form onSubmit={e => { e.preventDefault(); const updated = plans.includes(planName) ? plans : [...plans, planName]; setPlans(updated); try { localStorage.setItem('sendar-plans', JSON.stringify(updated)); } catch { /* local storage unavailable */ } close(); notify('Plan saved as a local draft.'); }} className="space-y-4"><label className="block">Plan name<input className={input} required value={planName} onChange={e => setPlanName(e.target.value)} placeholder="e.g. Brand partnerships" /></label><label className="block">Description<input className={input} placeholder="What makes this outreach meaningful?" /></label><label className="block">Subject <span className="text-[var(--muted)]">(optional)</span><input className={input} placeholder="A quick introduction" /></label><label className="block">Email body<textarea className={`${input} min-h-36`} value={body} onChange={e => setBody(e.target.value)} /></label><div className="flex flex-wrap gap-2">{['{{name}}', '{{store}}', '{{email}}'].map(t => <button key={t} type="button" className={`${button} !min-h-9 !text-xs`} onClick={() => setBody(b => b + t)}>{t}</button>)}</div><label className="block">Sender allocation<select className={input}><option>All approved connected accounts</option><option>Choose accounts at launch</option></select></label><label className="block">Schedule<select className={input}><option>Weekdays, 9 AM – 5 PM · workspace timezone</option><option>Manual launch</option></select></label><div className="rounded-lg bg-[var(--canvas)] p-4"><p className="mb-2 text-xs font-semibold text-[var(--muted)]">MESSAGE PREVIEW</p><p className="whitespace-pre-line leading-6">{body.replace('{{name}}', 'Olivia').replace('{{store}}', 'Layers').replace('{{email}}', 'olivia@layers.co')}</p></div><button className={`${primary} w-full`}>Save draft plan</button></form> :
+      modal === 'Connect Google account' ? <><div className="mb-5 flex h-14 w-14 items-center justify-center rounded-xl border border-[var(--line)] text-3xl font-semibold text-blue-600">G</div><h3 className="text-lg font-semibold">A secure connection, on your terms.</h3><p className="my-4 leading-6 text-[var(--muted)]">Google will ask you to allow Sendar to read replies, send outreach you approve, and synchronize your mailbox. We never ask for your password.</p><div className="mb-5 rounded-lg bg-[var(--canvas)] p-4 text-sm leading-6">OAuth is not configured in this interactive prototype. No permissions will be requested and no Google account will be connected.</div><button className={`${primary} w-full`} onClick={() => notify('Google OAuth requires a live backend and Google Cloud credentials. This is a secure UI preview only.')}><Icon name="shield" />Continue with Google · Preview</button><p className="mt-4 text-xs leading-5 text-[var(--muted)]">You can revoke access anytime in Google Account → Security → Third-party connections.</p></> :
+      modal === 'Import leads' ? <><p className="mb-5 leading-6 text-[var(--muted)]">CSV or TXT files. Required: email. Optional: name, store. Duplicate addresses are removed. Imports remain in this browser session.</p><input type="file" accept=".csv,.txt" aria-label="Select lead file" className={input} onChange={e => importFile(e.target.files?.[0])} /></> :
+      modal.startsWith('Delete batch:') || modal === 'Remove account' || modal === 'Reset local workspace' ? <><p className="mb-6 leading-6 text-[var(--muted)]">This removes {modal.startsWith('Delete') ? 'this batch and its imported leads from the local preview' : modal === 'Remove account' ? 'the demonstration connection from this view' : 'saved local plans and imported batches'}. This action cannot be undone.</p><div className="flex justify-end gap-3"><button className={button} onClick={close}>Cancel</button><button className={`${primary} !border-red-600 !bg-red-600`} onClick={() => { if (modal.startsWith('Delete')) setBatches(b => b.filter((_, i) => i !== Number(modal.split(':')[1]))); else if (modal === 'Reset local workspace') { setPlans([]); setBatches([]); try { localStorage.removeItem('sendar-plans'); } catch { /* unavailable */ } } else setRemovedAccounts(a => [...a, targetAccount]); close(); notify('Local preview updated.'); }}>Confirm removal</button></div></> :
+      modal.includes('campaign:') ? <><p className="mb-5 text-[var(--muted)]">Confirm this change to the demo campaign. Provider cooldowns and account sending limits are always respected.</p><button className={`${primary} w-full`} onClick={() => { const name = modal.split(': ')[1]; setCampaigns(cs => cs.map(c => c.name === name ? { ...c, status: modal.startsWith('Pause') ? 'Paused' : 'Sending' } : c)); close(); notify('Demo campaign status updated.'); }}>Confirm {modal.startsWith('Pause') ? 'pause' : 'resume'}</button></> :
+      modal.startsWith('Campaign:') ? <><p className="mb-5 text-[var(--muted)]">Review delivery exceptions before retrying. A retry never bypasses provider cooldowns.</p><div className="mb-5 rounded-lg bg-[var(--canvas)] p-4">2 invalid recipient addresses · 2 messages awaiting content review.</div><button className={primary} onClick={() => { close(); notify('Demo review acknowledged. No live messages retried.'); }}>Acknowledge review</button></> :
+      modal === 'More sections' ? <div className="space-y-2">{navigation.slice(5).map(n => <button key={n.label} className={`${button} w-full !justify-start`} onClick={() => { go(n.label); close(); }}><Icon name={n.icon} />{n.label}</button>)}</div> :
+      modal === 'Conversation actions' ? <div className="space-y-2">{['Mark unread', 'Add Interested tag', 'Assign to Alex Carter', 'Snooze until tomorrow', 'Open lead profile'].map(t => <button key={t} className={`${button} w-full !justify-start`} onClick={() => { if (t === 'Open lead profile') { setModal('Lead profile'); return; } if (t === 'Mark unread') { updateThread({ read: false }); setSelected(null); } if (t === 'Add Interested tag') updateThread({ interested: true }); if (t === 'Assign to Alex Carter') updateThread({ owner: 'Alex Carter' }); if (t === 'Snooze until tomorrow') { updateThread({ snoozed: true }); setSelected(null); } close(); notify(`${t} · updated in this session.`); }}>{t}</button>)}</div> :
+      modal === 'Notifications' ? <Empty icon="bell" title="You’re all caught up" description="Reply alerts and sending updates will appear here." /> :
+      modal === 'Switch workspace' ? <><button className={`${button} w-full !justify-between`} onClick={close}>Studio workspace <Icon name="check" /></button><p className="mt-4 text-[var(--muted)]">This preview contains one workspace.</p></> :
+      modal === 'Save settings' ? <><p className="mb-5 text-[var(--muted)]">Save these preferences in this browser. They do not change live sending behavior.</p><button className={primary} onClick={() => { try { localStorage.setItem('sendar-settings', JSON.stringify(settings)); close(); notify('Settings saved in this browser.'); } catch { notify('Unable to save settings. Browser storage may be full.'); } }}>Save preferences</button></> :
+      modal === 'Reporting date' ? <p className="leading-6 text-[var(--muted)]">The overview shows today’s activity in your workspace timezone. Use Analytics for a longer reporting window.</p> :
+      modal === 'Your plan' ? <><Badge tone="blue">Starter plan</Badge><p className="mt-4 leading-6 text-[var(--muted)]">A little more room for your next chapter. Billing and upgrades will be available in the live product. No payment is required for this preview.</p></> :
+      modal === 'Workspace profile' ? <><label>Display name<input className={input} defaultValue="Alex Carter" /></label><p className="mt-4 text-[var(--muted)]">Studio workspace · Starter plan · Local preview</p></> :
+      <><p className="leading-6 text-[var(--muted)]">Start with Accounts to explore secure Google onboarding, then import leads and create a scouting plan. The Demo workspace switch lets you explore populated and empty states.</p><button className={`${button} mt-5`} onClick={() => { go('Accounts'); close(); }}>Explore account setup<Icon name="arrow" /></button></>}
+    </Modal>}
+  </div>;
+}
+function Empty({ icon, title, description, action, onClick }: { icon: IconName; title: string; description: string; action?: string; onClick?: () => void }) {
+  return <div className="flex flex-col items-center px-6 py-14 text-center"><span className="mb-5 rounded-2xl border border-blue-100 bg-blue-50 p-4 text-blue-700"><Icon name={icon} className="!h-7 !w-7" /></span><h2 className="text-lg font-semibold tracking-tight">{title}</h2><p className="mt-2 max-w-sm leading-6 text-[var(--muted)]">{description}</p>{action && <button className={`${primary} mt-6`} onClick={onClick}><Icon name="plus" />{action}</button>}</div>;
+}
+function Chart({ demo, long }: { demo: boolean; long: boolean }) {
+  const values = demo ? (long ? [50, 80, 70, 110, 130, 100, 150] : [44, 90, 65, 135, 112, 168, 145]) : [0, 0, 0, 0, 0, 0, 0];
+  const coords = values.map((v, i) => `${70 + i * 96},${210 - v}`).join(' ');
+  const replies = values.map((v, i) => `${70 + i * 96},${210 - v * .2}`).join(' ');
+  return <div className="overflow-hidden px-3 pb-3"><svg role="img" aria-label={demo ? 'Demo outreach trend: sent emails and replies over the selected period. Demonstration data only.' : 'No outreach data yet.'} viewBox="0 0 700 255" className="mt-3 w-full"><defs><linearGradient id="area" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stopColor="#3455ef" stopOpacity=".13" /><stop offset="100%" stopColor="#3455ef" stopOpacity="0" /></linearGradient></defs>{[50, 90, 130, 170, 210].map((y, i) => <g key={y}><line x1="45" y1={y} x2="670" y2={y} stroke="var(--line)" strokeDasharray="4 4" /><text x="28" y={y + 4} fill="var(--muted)" fontSize="12" textAnchor="end">{(4 - i) * 50}</text></g>)}<polygon points={`70,210 ${coords} 646,210`} fill="url(#area)" /><polyline points={coords} fill="none" stroke="#3455ef" strokeWidth="2.5" strokeLinejoin="round" strokeLinecap="round" /><polyline points={replies} fill="none" stroke="#20aa83" strokeWidth="2" strokeLinecap="round" />{['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'].map((d, i) => <text key={d} x={70 + i * 96} y="242" fill="var(--muted)" fontSize="12" textAnchor="middle">{d}</text>)}</svg></div>;
 }

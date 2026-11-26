@@ -1,7 +1,8 @@
 import {createRoot} from 'react-dom/client';
 import App from './App.tsx';
-import {AccountPages} from './AccountPages';
 import './index.css';
 
 const accountPage=/\/sendar\/(signin|signup|welcome|about)\/?$/.test(window.location.pathname);
-createRoot(document.getElementById('root')!).render(accountPage?<AccountPages/>:<App />);
+const root=createRoot(document.getElementById('root')!);
+if(accountPage)void import('./AccountPages').then(({AccountPages})=>root.render(<AccountPages/>));
+else root.render(<App/>);
