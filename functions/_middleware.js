@@ -13,6 +13,7 @@ function jsonResponse(status, error) {
 
 export async function onRequest({ request, env, next }) {
   const url = new URL(request.url);
+  if (['/sendar/signin','/sendar/signup','/sendar/welcome','/sendar/about'].includes(url.pathname.replace(/\/$/,''))) return next();
   if (['/about','/about.html','/googleae5c9c582107a548.html','/googleae5c9c582107a548'].includes(url.pathname)) return next();
   if (
     publicPaths.has(url.pathname) || url.pathname.startsWith('/track/open/') || url.pathname.startsWith('/track/click/') ||
@@ -33,7 +34,8 @@ export async function onRequest({ request, env, next }) {
   const token = readSessionCookie(request);
   if (!await verifySession(token, env.DASHBOARD_PASSWORD)) {
     if (url.pathname.startsWith('/api/')) return jsonResponse(401, 'Please sign in.');
-    return Response.redirect(new URL(readCustomerCookie(request)?'/welcome':'/signin', url), 302);
+    const destination=url.pathname.startsWith('/sendar')?(readCustomerCookie(request)?'/sendar/welcome':'/sendar/signin?access=administrator'):(readCustomerCookie(request)?'/welcome':'/signin');
+    return Response.redirect(new URL(destination, url), 302);
   }
   return next();
 }

@@ -1,0 +1,12 @@
+import {useEffect,useRef,useState} from 'react';
+import {api} from '../lib/api';
+type Usage={day:string;resetAt:string;reads:number;writes:number;readLimit:number;writeLimit:number;sendingHeld:boolean};
+const percent=(n:number,d:number)=>d?`${(100*n/d).toFixed(1)}%`:'—';
+export function DailyUsage({onRefresh}:{onRefresh:(usage:Usage)=>void}){
+ const [usage,setUsage]=useState<Usage|null>(null),[error,setError]=useState(''),[busy,setBusy]=useState(false),[auto,setAuto]=useState(()=>localStorage.getItem('relay-auto-usage')==='1');
+ const callback=useRef(onRefresh);callback.current=onRefresh;
+ const load=async()=>{setBusy(true);try{const result=await api('usage');setUsage(result);setError('');callback.current(result);}catch(e){setError(e instanceof Error?e.message:'Usage could not be refreshed.');}finally{setBusy(false);}};
+ useEffect(()=>{void load();},[]);
+ useEffect(()=>{localStorage.setItem('relay-auto-usage',auto?'1':'0');if(!auto)return;const timer=setInterval(()=>{if(!document.hidden)void load();},60000);return()=>clearInterval(timer);},[auto]);
+ return <section aria-label="Today's application usage" className="p-5 rounded-[18px] border border-[var(--color-border)] bg-[var(--color-surface)] space-y-3"><div className="flex flex-wrap items-center justify-between gap-3"><h2 className="font-semibold">Today’s application usage</h2><button type="button" className="text-[13px] underline" disabled={busy} onClick={()=>void load()}>{busy?'Refreshing usage…':'Refresh today’s usage'}</button></div><label className="flex items-center gap-2 text-[13px]"><input type="checkbox" checked={auto} onChange={e=>setAuto(e.target.checked)}/>Auto-refresh today’s usage every minute</label>{error&&<p role="status" className="text-[var(--color-danger)] text-[13px]">{error}</p>}{usage&&<><div className="grid grid-cols-1 sm:grid-cols-2 gap-4 text-[13px]"><p>Database reads: <strong>{usage.reads.toLocaleString()} · {percent(usage.reads,usage.readLimit)}</strong></p><p>Database writes: <strong>{usage.writes.toLocaleString()} · {percent(usage.writes,usage.writeLimit)}</strong></p></div><p className="text-[12px] text-[var(--color-muted)]">{usage.day} usage day · {usage.sendingHeld?'Sending safety budget reached':'Within sending safety budget'}. Resets automatically at 1:00 AM Lagos time. Percentages are of the app’s daily safety budget, not Cloudflare’s monthly allowance. Refreshing keeps usage records, sender quotas and campaign history intact.</p></>}</section>;
+}

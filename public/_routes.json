@@ -4,6 +4,8 @@
     "/*"
   ],
   "exclude": [
+    "/sendar/assets/*",
+    "/sendar/sendar-logo.jpg",
     "/assets/*",
     "/customer-auth.css",
     "/customer-auth.js",

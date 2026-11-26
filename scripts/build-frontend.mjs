@@ -16,3 +16,6 @@ const assets=[...html.matchAll(/(?:src|href)="(\/assets\/[^"]+)"/g)].map(m=>m[1]
 for(const asset of assets)await cp(path.join(frontend,'dist',asset),path.join(release,asset));
 for(const file of ['googleae5c9c582107a548.html','about.html','login.html','login.js','styles.css','signup.html','signin.html','welcome.html','customer-auth.js','customer-auth.css','_headers','_routes.json'])await cp(path.join(root,'public',file),path.join(release,file));
 console.log('React production build copied to public; Pages Functions remain in functions/.');
+// Keep the independent final-release candidate available through legacy builds.
+const sendar=spawnSync(process.execPath,['scripts/build-sendar.mjs'],{cwd:root,stdio:'inherit'});
+if(sendar.status)process.exit(sendar.status);
