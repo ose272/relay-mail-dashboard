@@ -33,6 +33,9 @@ export async function verifyGoogleIdentity(token,{clientId,nonceHash,fetcher=fet
  const seconds=now/1000;
  if(!Number.isFinite(identity.exp)||identity.exp<=seconds||!Number.isFinite(identity.iat)||identity.iat>seconds+120||identity.iat<seconds-86400)throw Error('Expired Google identity.');
  if(typeof identity.nonce!=='string'||await digest(identity.nonce)!==nonceHash)throw Error('Google identity nonce mismatch.');
- if(typeof identity.sub!=='string'||!/^[A-Za-z0-9_-]{1,255}$/.test(identity.sub)||identity.email_verified!==true||typeof identity.email!=='string'||identity.email.length>254||!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(identity.email))throw Error('Verified Google email is required.');
+ // Google documents both a Boolean and the exact string "true" for this signed claim.
+ // Never coerce arbitrary truthy strings, numbers or missing values to verified.
+ const emailVerified=identity.email_verified===true||identity.email_verified==='true';
+ if(typeof identity.sub!=='string'||!/^[A-Za-z0-9_-]{1,255}$/.test(identity.sub)||!emailVerified||typeof identity.email!=='string'||identity.email.length>254||!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(identity.email))throw Error('Verified Google email is required.');
  return {sub:identity.sub,email:identity.email.toLowerCase()};
 }

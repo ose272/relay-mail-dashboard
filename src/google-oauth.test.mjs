@@ -26,6 +26,7 @@ async function fixture(){
     if(ctx.refreshError)return Response.json({error:ctx.refreshError,error_description:'provider detail must not be exposed'},{status:400});
     assert.equal(form.get('refresh_token'),'unit-only-refresh-token');return Response.json({access_token:'unit-only-refreshed-access',expires_in:3600});
    }
+   if(ctx.authorizationError)return Response.json({error:ctx.authorizationError,error_description:'unit-sensitive-provider-detail-must-not-be-stored'},{status:400});
    assert.equal(form.get('grant_type'),'authorization_code');assert.equal(form.get('redirect_uri'),origin+'/api/oauth/google/callback');assert.equal(await pkceChallenge(form.get('code_verifier')),ctx.flow.searchParams.get('code_challenge'));
    const now=Math.floor(Date.now()/1000),claims={iss:'https://accounts.google.com',aud:env.GOOGLE_CLIENT_ID,sub:'google-unit-sub',email:'connected@invalid.test',email_verified:true,iat:now,exp:now+3600,nonce:ctx.flow.searchParams.get('nonce'),...ctx.claims};
    return Response.json({id_token:await signedIdentity(claims),access_token:'unit-only-access-token',refresh_token:'unit-only-refresh-token',scope:ctx.scope,expires_in:ctx.expiresIn});
@@ -60,6 +61,10 @@ test('callback rejects a swapped customer session and replay, encrypts tokens an
  }finally{f.close();}
 });
 
+test('callback accepts the exact string true used in Google documented signed identities',async()=>{
+ const f=await fixture();try{f.ctx.claims={email_verified:'true'};await f.start();const response=await f.finish();assert.match(response.headers.get('Location'),/google=connected$/);assert.equal(f.db.sqlite.prepare('SELECT COUNT(*) AS n FROM customer_google_mailboxes').get().n,1);}finally{f.close();}
+});
+
 test('denied or incomplete grants and expired states do not connect a mailbox',async()=>{
  const f=await fixture();try{
   await f.start();assert.match((await f.finish(f.a,'&error=access_denied')).headers.get('Location'),/google=denied$/);assert.equal(f.ctx.calls.length,0);
@@ -70,6 +75,23 @@ test('denied or incomplete grants and expired states do not connect a mailbox',a
 
 test('a connected Google identity cannot be silently assigned to another workspace',async()=>{
  const f=await fixture();try{await f.start();await f.finish();await f.start(f.b);assert.match((await f.finish(f.b)).headers.get('Location'),/google=account_conflict$/);assert.equal(f.db.sqlite.prepare('SELECT workspace_id FROM customer_google_mailboxes').get().workspace_id,'wa');}finally{f.close();}
+});
+
+test('callback diagnostics report fixed provider-stage codes without storing provider details or tokens',async()=>{
+ const f=await fixture();try{
+  for(const [provider,expected] of [['invalid_client','google_client_rejected'],['invalid_grant','google_code_rejected']]){
+   f.ctx.authorizationError=provider;await f.start();const response=await f.finish(),url=new URL(response.headers.get('Location'));assert.equal(url.searchParams.get('google'),expected);const reference=url.searchParams.get('reference');assert.match(reference,/^[a-f0-9-]{36}$/);
+   const row=f.db.sqlite.prepare('SELECT * FROM customer_google_oauth_errors WHERE id=?').get(reference);assert.equal(row.stage,'token_exchange');assert.equal(row.error_code,expected);assert.equal(row.provider_status,400);assert.doesNotMatch(JSON.stringify(row),/unit-sensitive|unit-only|authorization-code|access_token|refresh_token|connected@/);
+  }
+  assert.equal(f.db.sqlite.prepare('SELECT COUNT(*) AS n FROM customer_google_mailboxes').get().n,0);
+ }finally{f.close();}
+});
+
+test('identity and database failures have separate diagnostics without weakening Google validation',async()=>{
+ const f=await fixture();try{
+  f.ctx.claims={nonce:'wrong-nonce'};await f.start();let response=await f.finish();assert.match(response.headers.get('Location'),/google=google_identity_nonce&reference=/);assert.equal(f.db.sqlite.prepare('SELECT COUNT(*) AS n FROM customer_google_mailboxes').get().n,0);
+  f.ctx.claims={};f.db.sqlite.exec("CREATE TRIGGER unit_mailbox_write_failure BEFORE INSERT ON customer_google_mailboxes BEGIN SELECT RAISE(ABORT,'unit-sensitive-database-error');END;");await f.start();response=await f.finish();assert.match(response.headers.get('Location'),/google=connection_save_failed&reference=/);const row=f.db.sqlite.prepare("SELECT * FROM customer_google_oauth_errors WHERE stage='connection_save'").get();assert.equal(row.error_code,'connection_save_failed');assert.doesNotMatch(JSON.stringify(row),/unit-sensitive|unit-only|ciphertext|connected@/);
+ }finally{f.close();}
 });
 
 test('Gmail access check is read-only, workspace-scoped and cached briefly without sending mail',async()=>{
@@ -97,6 +119,8 @@ test('disconnect clears local tokens even if Google revocation is unavailable',a
 test('signed Google identity checks issuer, audience, nonce, expiry, verified email and signature',async()=>{
  const key=await crypto.subtle.exportKey('jwk',(await keyPair).publicKey);Object.assign(key,{kid:'unit-google-key',use:'sig',alg:'RS256'});const fetcher=async()=>Response.json({keys:[key]}),now=Math.floor(Date.now()/1000),claims={iss:'https://accounts.google.com',aud:'unit-client',sub:'unit-sub',email:'email@invalid.test',email_verified:true,iat:now,exp:now+3600,nonce:'unit-nonce'},options={clientId:'unit-client',nonceHash:await digest('unit-nonce'),fetcher};
  assert.equal((await verifyGoogleIdentity(await signedIdentity(claims),options)).email,'email@invalid.test');
+ assert.equal((await verifyGoogleIdentity(await signedIdentity({...claims,email_verified:'true'}),options)).email,'email@invalid.test');
+ for(const value of ['false','TRUE',' true ',1,0,null,undefined])await assert.rejects(()=>signedIdentity({...claims,email_verified:value}).then(t=>verifyGoogleIdentity(t,options)));
  for(const change of [{iss:'https://attacker.invalid'},{aud:'other-client'},{nonce:'wrong'},{exp:now-1},{iat:now+1000},{email_verified:false},{email:'bad'}])await assert.rejects(()=>signedIdentity({...claims,...change}).then(t=>verifyGoogleIdentity(t,options)));
  const token=await signedIdentity(claims),parts=token.split('.');parts[1]=encode({...claims,email:'forged@invalid.test'});await assert.rejects(()=>verifyGoogleIdentity(parts.join('.'),options));await assert.rejects(()=>signedIdentity(claims,{alg:'none',kid:'unit-google-key'}).then(t=>verifyGoogleIdentity(t,options)));
 });

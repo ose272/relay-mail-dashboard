@@ -10,8 +10,34 @@ class OAuthError extends Error{constructor(status,code,message){super(message);t
 const json=(status,body)=>new Response(JSON.stringify(body),{status,headers:{...noStore,'Content-Type':'application/json; charset=utf-8'}});
 const configured=env=>Boolean(env.GOOGLE_CLIENT_ID&&env.GOOGLE_CLIENT_SECRET&&env.GOOGLE_OAUTH_ENCRYPTION_KEY);
 function origin(env){const url=new URL(env.GOOGLE_OAUTH_ORIGIN||'https://sendar.com.de');if(url.protocol!=='https:'||url.pathname!=='/'||url.search||url.hash||url.username||url.password)throw Error('Invalid configured OAuth origin.');return url.origin;}
-const destination=(env,result)=>new Response(null,{status:303,headers:{...noStore,Location:origin(env)+'/sendar/welcome?google='+result}});
+const destination=(env,result,reference)=>new Response(null,{status:303,headers:{...noStore,Location:origin(env)+'/sendar/welcome?google='+result+(reference?'&reference='+reference:'')}});
 const tokenContext=row=>'google-mailbox:'+row.workspace_id+':'+row.google_sub;
+function failureCode(stage,error){
+ if(stage==='authorization_verifier')return 'oauth_key_mismatch';
+ if(stage==='token_exchange'){
+  if(error.providerCode==='invalid_client')return 'google_client_rejected';
+  if(error.providerCode==='invalid_grant')return 'google_code_rejected';
+  if(error.providerCode==='access_denied')return 'google_access_denied';
+  if(error.status===429||error.status>=500)return 'google_temporary_error';
+  return 'google_token_request_failed';
+ }
+ if(stage==='identity_validation'){
+  if(error.status)return 'google_signing_keys_failed';
+  if(error.message==='Invalid Google signature.')return 'google_identity_signature';
+  if(error.message==='Google identity audience mismatch.')return 'google_identity_audience';
+  if(error.message==='Google identity nonce mismatch.')return 'google_identity_nonce';
+  return 'google_identity_invalid';
+ }
+ return stage==='connection_save'?'connection_save_failed':'connection_failed';
+}
+async function recordFailure(db,workspaceId,stage,error){
+ const reference=crypto.randomUUID(),code=failureCode(stage,error),status=Number.isInteger(error.status)&&error.status>=100&&error.status<600?error.status:0;
+ try{await db.batch([
+  db.prepare('INSERT INTO customer_google_oauth_errors(id,workspace_id,stage,error_code,provider_status,created_at) VALUES(?,?,?,?,?,?)').bind(reference,workspaceId,stage,code,status,new Date().toISOString()),
+  db.prepare('DELETE FROM customer_google_oauth_errors WHERE id IN(SELECT id FROM customer_google_oauth_errors WHERE created_at<? ORDER BY created_at,id LIMIT 20)').bind(new Date(Date.now()-7*86400000).toISOString())
+ ]);}catch{console.warn('OAUTH_SAFE_DIAGNOSTIC',JSON.stringify({reference,stage,code,status}));}
+ return {reference,code};
+}
 async function readBody(request){
  if(request.headers.get('Origin')!==new URL(request.url).origin)throw new OAuthError(403,'CROSS_ORIGIN','Cross-origin request blocked.');
  if(!request.headers.get('Content-Type')?.startsWith('application/json'))throw new OAuthError(415,'JSON_REQUIRED','JSON required.');
@@ -44,13 +70,17 @@ async function callback(request,env,db,customer,fetcher){
  if(!saved)return destination(env,'expired');
  if(url.searchParams.has('error'))return destination(env,'denied');
  const code=url.searchParams.get('code');if(!code||code.length>4096)return destination(env,'failed');
+ let stage='authorization_verifier';
  try{
   const verifier=await decryptCredential('oauth-state:'+saved.state_hash,saved.verifier_ciphertext,env.GOOGLE_OAUTH_ENCRYPTION_KEY);
+  stage='token_exchange';
   const tokens=await providerJson(fetcher,'https://oauth2.googleapis.com/token',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:new URLSearchParams({client_id:env.GOOGLE_CLIENT_ID,client_secret:env.GOOGLE_CLIENT_SECRET,code,code_verifier:verifier,redirect_uri:origin(env)+callbackPath,grant_type:'authorization_code'})});
+  stage='identity_validation';
   const identity=await verifyGoogleIdentity(tokens.id_token,{clientId:env.GOOGLE_CLIENT_ID,nonceHash:saved.nonce_hash,fetcher});
   const scopes=typeof tokens.scope==='string'?tokens.scope.split(/\s+/):[];
   if(gmailScopes.some(scope=>!scopes.includes(scope)))return destination(env,'permissions');
   if(typeof tokens.access_token!=='string'||!tokens.access_token||tokens.access_token.length>16000)return destination(env,'failed');
+  stage='connection_save';
   const prior=await db.prepare("SELECT id,workspace_id,google_sub,refresh_ciphertext FROM customer_google_mailboxes WHERE google_sub=? AND status<>'disconnected'").bind(identity.sub).first();
   if(prior&&prior.workspace_id!==customer.workspace_id)return destination(env,'account_conflict');
   const context=tokenContext({workspace_id:customer.workspace_id,google_sub:identity.sub});
@@ -64,9 +94,10 @@ async function callback(request,env,db,customer,fetcher){
    await db.prepare('INSERT INTO customer_google_mailboxes(id,workspace_id,google_sub,email,refresh_ciphertext,access_ciphertext,access_expires_at,granted_scopes,connected_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?)').bind(crypto.randomUUID(),customer.workspace_id,identity.sub,identity.email,refresh,access,expiry,scopes.join(' '),now,now).run();
   }
   return destination(env,'connected');
- }catch{
+ }catch(error){
   // Never log authorization codes, provider responses, tokens or credential data.
-  return destination(env,'failed');
+  const diagnostic=await recordFailure(db,customer.workspace_id,stage,error);
+  return destination(env,diagnostic.code,diagnostic.reference);
  }
 }
 async function ownedMailbox(db,customer,id){
