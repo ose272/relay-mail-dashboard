@@ -4,7 +4,10 @@
   "main": "src/send-scheduler.js",
   "compatibility_date": "2026-11-16",
   "triggers": {
-    "crons": ["* * * * *"]
+    "crons": [
+      "* * * * *",
+      "0 * * * *"
+    ]
   },
   "vars": {
     "DASHBOARD_API_URL": "https://REPLACE-WITH-YOUR-PAGES-URL.pages.dev"

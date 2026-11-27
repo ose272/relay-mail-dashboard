@@ -1,0 +1,30 @@
+Sendar release status - 27 November 2026
+
+Implemented in this release:
+- Password signup/signin route directly to the original responsive dashboard.
+- Google identity login is separate from optional Gmail mailbox authorization.
+- New customer leads, plans, settings and connection metadata are workspace-scoped.
+- Mailbox disconnect clears saved tokens and attempts provider revocation.
+- Installable web-app manifest, supplied logo and generic offline page. API data and authenticated HTML are never cached for offline viewing.
+- The known test account is removed separately through a narrowly scoped operator action, preserving recent pseudonymous sending usage.
+
+Not a full public mail launch:
+- Customer campaign queues, background sending, inbox sync, reply actions and tracking are not connected yet. The existing administrator mail engine is intentionally not exposed to customers.
+- The dashboard marks these capabilities unavailable rather than showing mock campaigns or dispatching under another customer's identity.
+- Public app description, privacy policy, terms, support.sendar@gmail.com contact and a self-service account-deletion flow are included. Customer mail functionality and Google review remain release gates.
+- Google restricted Gmail access requires its own approval; publishing status is not verification.
+
+Mobile distribution:
+- No signed Android App Bundle or iOS archive has been built or uploaded.
+- Owner has no Apple Developer or Google Play Console accounts yet. Enrollment, identity checks, app records and store review remain external requirements.
+- Android needs a final package ID, app signing setup, native Google OAuth client or a verified browser-based flow, and test distribution.
+- New personal Google Play accounts generally require 12 opted-in closed testers for 14 continuous days before applying for production access.
+- iOS needs a Mac/Xcode build environment, bundle ID, signing and TestFlight. Review must consider Apple's minimum-functionality and login-services requirements. Google login may require an equivalent privacy-preserving login option unless an exception applies.
+- A simple website wrapper is not a promise of Apple approval. Native navigation, external-browser OAuth and useful platform integration must be tested.
+- App privacy/Data safety declarations must match actual data processing. Future subscriptions require a separate review of store billing rules; Paystack checkout remains inactive.
+
+Official references:
+https://developer.apple.com/app-store/review/guidelines/
+https://support.google.com/googleplay/android-developer/answer/14151465
+https://developers.google.com/identity/protocols/oauth2/production-readiness/restricted-scope-verification
+https://developers.google.com/identity/protocols/oauth2/native-app

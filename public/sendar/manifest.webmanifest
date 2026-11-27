@@ -1,0 +1,7 @@
+{
+ "id":"/sendar/","name":"Sendar","short_name":"Sendar",
+ "description":"Your private outreach workspace.","lang":"en",
+ "start_url":"/sendar/","scope":"/sendar/","display":"standalone",
+ "background_color":"#f8f9fc","theme_color":"#1237e8",
+ "icons":[{"src":"/sendar/app-icon.svg","sizes":"any","type":"image/svg+xml","purpose":"any"}]
+}

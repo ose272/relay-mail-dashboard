@@ -2,8 +2,9 @@
 // original authorization; customer pages only use the separate account APIs.
 export async function onRequest({request,env}) {
  const path=new URL(request.url).pathname.replace(/\/$/,'');
+ if(['/sendar/manifest.webmanifest','/sendar/sw.js','/sendar/app-icon.svg','/sendar/offline'].includes(path)&&['GET','HEAD'].includes(request.method))return env.ASSETS.fetch(new Request(new URL(path==='/sendar/offline'?'/sendar/offline/':path,request.url),{method:request.method}));
  if(path==='/sendar/design')return Response.redirect(new URL('/sendar/',request.url),302);
- if(!['/sendar','/sendar/index.html','/sendar/design','/sendar/signin','/sendar/signup','/sendar/welcome','/sendar/about'].includes(path))return new Response('Page not found.',{status:404});
+ if(!['/sendar','/sendar/index.html','/sendar/design','/sendar/signin','/sendar/signup','/sendar/welcome','/sendar/about','/sendar/privacy','/sendar/terms','/sendar/delete-account'].includes(path))return new Response('Page not found.',{status:404});
  if(!['GET','HEAD'].includes(request.method))return new Response('Method not allowed.',{status:405,headers:{Allow:'GET, HEAD'}});
  // Fetch the directory index directly; Pages canonicalizes explicit .html URLs.
  const asset=new URL('/sendar/',request.url);

@@ -53,28 +53,28 @@ test('OAuth start is customer-only, same-origin, session-bound and uses PKCE and
 
 test('callback rejects a swapped customer session and replay, encrypts tokens and never exposes legacy mail',async()=>{
  const f=await fixture();try{
-  await f.start();const swapped=await f.finish(f.b);assert.match(swapped.headers.get('Location'),/google=expired$/);assert.equal(f.ctx.calls.length,0);assert.equal(f.db.sqlite.prepare('SELECT COUNT(*) AS n FROM customer_google_oauth_states').get().n,1);
-  const r=await f.finish();assert.equal(r.status,303);assert.equal(r.headers.get('Referrer-Policy'),'no-referrer');assert.match(r.headers.get('Location'),/google=connected$/);
+  await f.start();const swapped=await f.finish(f.b);assert.match(swapped.headers.get('Location'),/google=expired#page=Accounts$/);assert.equal(f.ctx.calls.length,0);assert.equal(f.db.sqlite.prepare('SELECT COUNT(*) AS n FROM customer_google_oauth_states').get().n,1);
+  const r=await f.finish();assert.equal(r.status,303);assert.equal(r.headers.get('Referrer-Policy'),'no-referrer');assert.match(r.headers.get('Location'),/google=connected#page=Accounts$/);
   const row=f.db.sqlite.prepare('SELECT * FROM customer_google_mailboxes').get();assert.equal(row.workspace_id,'wa');assert.equal(row.email,'connected@invalid.test');assert.ok(!row.refresh_ciphertext.includes('unit-only-refresh-token'));assert.ok(!row.access_ciphertext.includes('unit-only-access-token'));
   const list=await(await f.call('mailboxes')).json();assert.equal(list.total,1);assert.equal(list.mailboxes[0].id,row.id);assert.doesNotMatch(JSON.stringify(list),/ciphertext|unit-only|legacy@invalid|access_token|refresh_token/);assert.equal((await(await f.call('mailboxes',{cookie:f.b})).json()).total,0);
-  const count=f.ctx.calls.length;assert.match((await f.finish()).headers.get('Location'),/google=expired$/);assert.equal(f.ctx.calls.length,count);assert.equal(f.db.sqlite.prepare('SELECT COUNT(*) AS n FROM customer_google_mailboxes').get().n,1);
+  const count=f.ctx.calls.length;assert.match((await f.finish()).headers.get('Location'),/google=expired#page=Accounts$/);assert.equal(f.ctx.calls.length,count);assert.equal(f.db.sqlite.prepare('SELECT COUNT(*) AS n FROM customer_google_mailboxes').get().n,1);
  }finally{f.close();}
 });
 
 test('callback accepts the exact string true used in Google documented signed identities',async()=>{
- const f=await fixture();try{f.ctx.claims={email_verified:'true'};await f.start();const response=await f.finish();assert.match(response.headers.get('Location'),/google=connected$/);assert.equal(f.db.sqlite.prepare('SELECT COUNT(*) AS n FROM customer_google_mailboxes').get().n,1);}finally{f.close();}
+ const f=await fixture();try{f.ctx.claims={email_verified:'true'};await f.start();const response=await f.finish();assert.match(response.headers.get('Location'),/google=connected#page=Accounts$/);assert.equal(f.db.sqlite.prepare('SELECT COUNT(*) AS n FROM customer_google_mailboxes').get().n,1);}finally{f.close();}
 });
 
 test('denied or incomplete grants and expired states do not connect a mailbox',async()=>{
  const f=await fixture();try{
-  await f.start();assert.match((await f.finish(f.a,'&error=access_denied')).headers.get('Location'),/google=denied$/);assert.equal(f.ctx.calls.length,0);
-  await f.start();f.ctx.scope='openid email';assert.match((await f.finish()).headers.get('Location'),/google=permissions$/);assert.equal(f.db.sqlite.prepare('SELECT COUNT(*) AS n FROM customer_google_mailboxes').get().n,0);
-  await f.start();f.db.sqlite.exec("UPDATE customer_google_oauth_states SET expires_at='2000-01-01T00:00:00Z'");const count=f.ctx.calls.length;assert.match((await f.finish()).headers.get('Location'),/google=expired$/);assert.equal(f.ctx.calls.length,count);
+  await f.start();assert.match((await f.finish(f.a,'&error=access_denied')).headers.get('Location'),/google=denied#page=Accounts$/);assert.equal(f.ctx.calls.length,0);
+  await f.start();f.ctx.scope='openid email';assert.match((await f.finish()).headers.get('Location'),/google=permissions#page=Accounts$/);assert.equal(f.db.sqlite.prepare('SELECT COUNT(*) AS n FROM customer_google_mailboxes').get().n,0);
+  await f.start();f.db.sqlite.exec("UPDATE customer_google_oauth_states SET expires_at='2000-01-01T00:00:00Z'");const count=f.ctx.calls.length;assert.match((await f.finish()).headers.get('Location'),/google=expired#page=Accounts$/);assert.equal(f.ctx.calls.length,count);
  }finally{f.close();}
 });
 
 test('a connected Google identity cannot be silently assigned to another workspace',async()=>{
- const f=await fixture();try{await f.start();await f.finish();await f.start(f.b);assert.match((await f.finish(f.b)).headers.get('Location'),/google=account_conflict$/);assert.equal(f.db.sqlite.prepare('SELECT workspace_id FROM customer_google_mailboxes').get().workspace_id,'wa');}finally{f.close();}
+ const f=await fixture();try{await f.start();await f.finish();await f.start(f.b);assert.match((await f.finish(f.b)).headers.get('Location'),/google=account_conflict#page=Accounts$/);assert.equal(f.db.sqlite.prepare('SELECT workspace_id FROM customer_google_mailboxes').get().workspace_id,'wa');}finally{f.close();}
 });
 
 test('callback diagnostics report fixed provider-stage codes without storing provider details or tokens',async()=>{

@@ -1,4 +1,5 @@
-import {readCustomerCookie} from './_lib/customer-auth.js';
+import {readCustomerCookie,customerSession} from './_lib/customer-auth.js';
+import {customerWorkspace} from './_lib/customer-workspace.js';
 import { readSessionCookie, verifySession } from './_lib/auth.js';
 
 const publicPaths = new Set(['/login', '/login.html', '/login.js', '/styles.css', '/favicon.ico', '/track/open','/signup','/signup.html','/signin','/signin.html','/welcome','/welcome.html','/api/auth/config','/api/auth/signup','/api/auth/signin','/api/auth/session','/api/auth/signout']);
@@ -13,14 +14,19 @@ function jsonResponse(status, error) {
 
 export async function onRequest({ request, env, next }) {
   const url = new URL(request.url);
+  // The public product homepage is separate from the authenticated dashboard.
+  if(url.pathname==='/')return next();
   // OAuth endpoints validate the customer session themselves. Owner cookies never authorize them.
   if(url.pathname.startsWith('/api/oauth/google/'))return next();
   // Recipient-bound operator jobs authenticate a short-lived capability themselves.
   if(url.pathname==='/api/internal/customer-test-send')return next();
+  if(['/sendar/manifest.webmanifest','/sendar/offline','/sendar/offline/'].includes(url.pathname)&&['GET','HEAD'].includes(request.method))return next();
+  if(url.pathname==='/api/auth/google/start')return next();
+  if(['/sendar/welcome','/sendar/welcome/','/welcome','/welcome.html'].includes(url.pathname)&&['GET','HEAD'].includes(request.method))return Response.redirect(new URL('/sendar/'+url.search+(url.search?'#page=Accounts':''),url),302);
   if(['GET','HEAD'].includes(request.method)&&url.pathname.replace(/\/$/,'')==='/sendar/signin'&&url.searchParams.get('access')==='administrator')return Response.redirect(new URL('/sendar/signin',url),302);
-  const legacy={'/':'/sendar/','/index.html':'/sendar/','/login':'/sendar/signin','/login.html':'/sendar/signin','/signin':'/sendar/signin','/signin.html':'/sendar/signin','/signup':'/sendar/signup','/signup.html':'/sendar/signup','/welcome':'/sendar/welcome','/welcome.html':'/sendar/welcome','/about':'/sendar/about','/about.html':'/sendar/about','/sendar/design':'/sendar/','/sendar/design/':'/sendar/'};
+  const legacy={'/privacy':'/sendar/privacy','/terms':'/sendar/terms','/delete-account':'/sendar/delete-account','/':'/sendar/','/index.html':'/sendar/','/login':'/sendar/signin','/login.html':'/sendar/signin','/signin':'/sendar/signin','/signin.html':'/sendar/signin','/signup':'/sendar/signup','/signup.html':'/sendar/signup','/welcome':'/sendar/welcome','/welcome.html':'/sendar/welcome','/about':'/sendar/about','/about.html':'/sendar/about','/sendar/design':'/sendar/','/sendar/design/':'/sendar/'};
   if(['GET','HEAD'].includes(request.method)&&legacy[url.pathname])return Response.redirect(new URL(legacy[url.pathname],url),302);
-  if (['/sendar/signin','/sendar/signup','/sendar/welcome','/sendar/about'].includes(url.pathname.replace(/\/$/,''))) return next();
+  if (['/sendar/signin','/sendar/signup','/sendar/welcome','/sendar/about','/sendar/privacy','/sendar/terms','/sendar/delete-account'].includes(url.pathname.replace(/\/$/,''))) return next();
   if (['/about','/about.html','/googleae5c9c582107a548.html','/googleae5c9c582107a548'].includes(url.pathname)) return next();
   if (
     publicPaths.has(url.pathname) || url.pathname.startsWith('/track/open/') || url.pathname.startsWith('/track/click/') ||
@@ -28,11 +34,16 @@ export async function onRequest({ request, env, next }) {
     url.pathname === '/api/login'
   ) return next();
   if (
-    ['/api/internal/send-tick','/api/internal/prepare-tick'].includes(url.pathname) &&
+    ['/api/internal/send-tick','/api/internal/prepare-tick','/api/internal/privacy-cleanup'].includes(url.pathname) &&
     env.BACKGROUND_CRON_SECRET &&
     request.headers.get('Authorization') === `Bearer ${env.BACKGROUND_CRON_SECRET}`
   ) return next();
 
+  if(readCustomerCookie(request)){
+    if(url.pathname.startsWith('/api/'))return customerWorkspace({request,env});
+    try{if(env.DB&&await customerSession(env.DB,request))return next();}catch{return new Response('Workspace temporarily unavailable. Retry shortly.',{status:503,headers:{'Cache-Control':'no-store'}});}
+    return Response.redirect(new URL('/sendar/signin',url),302);
+  }
   if(env.ADMIN_LOGIN_DISABLED==='1'){
     if(url.pathname.startsWith('/api/'))return jsonResponse(401,'Administrator access is disabled. Sign in with your Sendar account.');
     return Response.redirect(new URL(readCustomerCookie(request)?'/sendar/welcome':'/sendar/signin',url),302);

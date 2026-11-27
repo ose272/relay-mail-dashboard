@@ -1,0 +1,12 @@
+Self-service account deletion: implementation approved by the user on 27 November 2026
+
+Location: Settings > Account security > Delete account.
+The user must have a recent authenticated Sendar session and type DELETE.
+Deletion applies only to the authenticated user's own workspace, never an arbitrary user ID.
+The server refuses deletion while a message is in flight and requires explicit cancellation of queued campaigns first.
+The server revokes Google mailbox grants where possible and removes encrypted tokens, leads, plans, mailbox content, identity links, profile and sessions.
+Only a pseudonymous sender hash plus actual accepted/uncertain-send timestamps remains for the unexpired ten-hour quota window; no recipient, message body or OAuth credential remains in that history.
+The UI reports success only after confirmed database deletion, clears the session and returns to sign-in.
+No administrator bulk-delete endpoint is proposed.
+
+Approval status: the user explicitly approved the additional self-service feature. An earlier automatic rejection was limited to the prior test-account-only authorization; the scope has now been approved.

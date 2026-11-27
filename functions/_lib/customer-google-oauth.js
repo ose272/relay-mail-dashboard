@@ -2,6 +2,7 @@ import {customerSession,readCustomerCookie} from './customer-auth.js';
 import {encryptCredential,decryptCredential} from './credentials.js';
 import {googleScopes,randomToken,digest,pkceChallenge,providerJson,verifyGoogleIdentity} from './google-identity.js';
 import {meteredD1,readUsageDay,usageBudgets} from './usage-budget.js';
+import {googleLoginCallback} from './google-login.js';
 
 const callbackPath='/api/oauth/google/callback';
 const gmailScopes=googleScopes.filter(s=>s.startsWith('https://www.googleapis.com/auth/gmail.'));
@@ -10,7 +11,7 @@ class OAuthError extends Error{constructor(status,code,message){super(message);t
 const json=(status,body)=>new Response(JSON.stringify(body),{status,headers:{...noStore,'Content-Type':'application/json; charset=utf-8'}});
 const configured=env=>Boolean(env.GOOGLE_CLIENT_ID&&env.GOOGLE_CLIENT_SECRET&&env.GOOGLE_OAUTH_ENCRYPTION_KEY);
 function origin(env){const url=new URL(env.GOOGLE_OAUTH_ORIGIN||'https://sendar.com.de');if(url.protocol!=='https:'||url.pathname!=='/'||url.search||url.hash||url.username||url.password)throw Error('Invalid configured OAuth origin.');return url.origin;}
-const destination=(env,result,reference)=>new Response(null,{status:303,headers:{...noStore,Location:origin(env)+'/sendar/welcome?google='+result+(reference?'&reference='+reference:'')}});
+const destination=(env,result,reference)=>new Response(null,{status:303,headers:{...noStore,Location:origin(env)+'/sendar/?google='+result+(reference?'&reference='+reference:'')+'#page=Accounts'}});
 const tokenContext=row=>'google-mailbox:'+row.workspace_id+':'+row.google_sub;
 function failureCode(stage,error){
  if(stage==='authorization_verifier')return 'oauth_key_mismatch';
@@ -133,6 +134,7 @@ async function disconnect(env,db,row,fetcher){
  return json(200,{ok:true,revoked,message:revoked?'Disconnected from Google.':'Disconnected locally. You can also remove Sendar access in your Google account to revoke the grant.'});
 }
 export async function customerGoogleOAuth({request,env,fetcher=fetch}){
+ if(request.method==='GET'&&new URL(request.url).pathname==='/api/oauth/google/callback'&&new URL(request.url).searchParams.get('state')?.startsWith('login_'))return googleLoginCallback({request,env,fetcher});
  const path=new URL(request.url).pathname,action=path.slice('/api/oauth/google/'.length),isCallback=action==='callback'&&request.method==='GET';
  if(action==='config'&&request.method==='GET')return json(200,{configured:configured(env),origin:origin(env),callback:origin(env)+callbackPath});
  const methods={start:'POST',callback:'GET',mailboxes:'GET',check:'POST',disconnect:'POST'};

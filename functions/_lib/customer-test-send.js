@@ -23,7 +23,7 @@ export async function customerTestSend({request,env,fetcher=fetch}){
  const finish=async(status,code)=>{await db.prepare('UPDATE customer_test_deliveries SET status=?,error_code=? WHERE id=? AND status=\'sending\'').bind(status,code,id).run();return json(status==='sent'?200:409,{id,status,errorCode:code});};
  try{
   const row=await db.prepare("SELECT * FROM customer_google_mailboxes WHERE id=? AND workspace_id=? AND status='connected'").bind(job.mailbox_id,job.workspace_id).first();
-  if(!row||!row.granted_scopes.split(/\s+/).includes('https://www.googleapis.com/auth/gmail.send'))return await finish('blocked','MAILBOX_NOT_READY');
+  if(!row||row.paused||!row.granted_scopes.split(/\s+/).includes('https://www.googleapis.com/auth/gmail.send'))return await finish('blocked','MAILBOX_NOT_READY');
   if(!email.test(row.email)||!email.test(job.recipient))return await finish('blocked','INVALID_ADDRESS');
   const cutoff=new Date(Date.now()-SEND_WINDOW_MS).toISOString();
   const legacy=await db.prepare('SELECT id,cap,paused,send_retry_after FROM accounts WHERE lower(email)=?').bind(row.email.toLowerCase()).first();
@@ -32,9 +32,10 @@ export async function customerTestSend({request,env,fetcher=fetch}){
    const busy=await db.prepare("SELECT 1 AS busy FROM campaign_deliveries WHERE account_id=? AND status IN('queued','sending') LIMIT 1").bind(legacy.id).first();
    if(busy)return await finish('blocked','EXISTING_CAMPAIGN_ACTIVE');
   }
-  const used=await db.prepare("SELECT COUNT(*) AS total FROM customer_test_deliveries WHERE mailbox_id=? AND status IN('sending','sent','uncertain') AND started_at>?").bind(row.id,cutoff).first();
+  const used=await db.prepare("SELECT COUNT(*) AS total FROM customer_test_deliveries WHERE mailbox_id IN(SELECT id FROM customer_google_mailboxes WHERE google_sub=?) AND status IN('sending','sent','uncertain') AND started_at>?").bind(row.google_sub,cutoff).first();
   const history=legacy?await db.prepare("SELECT COUNT(*) AS total FROM campaign_deliveries WHERE account_id=? AND status IN('sending','sent','uncertain') AND COALESCE(sent_at,started_at)>?").bind(legacy.id,cutoff).first():{total:0};
-  if(Number(used.total)+Number(history.total)>Math.min(40,legacy?.cap??40))return await finish('blocked','SENDER_CAPACITY');
+  const retained=await db.prepare('SELECT COUNT(*) AS total FROM customer_retained_send_usage WHERE sender_hash=? AND used_at>?').bind(await digest(row.email.toLowerCase()),cutoff).first();
+  if(Number(used.total)+Number(history.total)+Number(retained.total)>Math.min(40,row.cap,legacy?.cap??40))return await finish('blocked','SENDER_CAPACITY');
   const context='google-mailbox:'+row.workspace_id+':'+row.google_sub;
   let access=Date.parse(row.access_expires_at)>Date.now()+60000?await decryptCredential(context,row.access_ciphertext,env.GOOGLE_OAUTH_ENCRYPTION_KEY):await refreshAccess(env,db,row,fetcher);
   const profile=()=>providerJson(fetcher,'https://gmail.googleapis.com/gmail/v1/users/me/profile',{headers:{Authorization:'Bearer '+access}});

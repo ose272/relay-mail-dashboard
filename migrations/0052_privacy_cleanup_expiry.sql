@@ -1,0 +1,1 @@
+CREATE INDEX customer_retained_usage_expiry ON customer_retained_send_usage(used_at,id);

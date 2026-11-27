@@ -1,0 +1,44 @@
+Google Auth Platform - Sendar form values (27 November 2026)
+
+Credentials
+Use the existing OAuth web client unless creating a separate production project intentionally. Testing versus In production is a publishing setting, not a different class of secret.
+Application type: Web application
+Client display name: Sendar Web Production
+Authorized JavaScript origin: https://sendar.com.de
+Authorized redirect URI: https://sendar.com.de/api/oauth/google/callback
+Never use /sendar/welcome as the OAuth callback.
+
+Branding
+App name: Sendar
+Support email: support.sendar@gmail.com (the address must be selectable/verified under the project as required by Google).
+Developer contact: support.sendar@gmail.com.
+Authorized domain: sendar.com.de (no scheme or path).
+Homepage: https://sendar.com.de/ (public descriptive page with privacy and terms links).
+Privacy policy: https://sendar.com.de/privacy.
+Terms: https://sendar.com.de/terms.
+Verify domain ownership in Google Search Console using a Google account that is an Owner or Editor of this Cloud project.
+
+Audience
+External. Public registration and Google verification are separate release gates.
+Publish app changes Testing to In production; this does not by itself approve Gmail scopes or remove an unverified-app warning.
+
+Data access
+Identity login requests only openid, email, profile (Google console may list equivalent userinfo.email and userinfo.profile URIs).
+Optional mailbox connection requests:
+https://www.googleapis.com/auth/gmail.send
+https://www.googleapis.com/auth/gmail.readonly
+Do not add full https://mail.google.com/ or gmail.modify; current implementation does not need those permissions.
+
+Draft functional explanation, to use only after the customer features are complete:
+Sendar is an email outreach and conversation workspace. Users sign into their Sendar account using Google identity or a separate Sendar password. Connecting a Google mailbox is an additional user-authorized action. Sending permission allows the app to send messages the user composes or explicitly schedules. Read-only Gmail permission supports showing replies, Sent-folder conversations and user-selected Spam-folder replies. Sendar does not require permission to modify or permanently delete Gmail messages.
+
+Do not state that customer campaigns or inbox sync are complete in the verification submission yet. These integrations remain gated in the customer workspace. Demonstration video must show the actual completed flows, consent screen, requested scopes and correct domain.
+
+Review gates
+gmail.send is sensitive; gmail.readonly is restricted. Server access to restricted Gmail data generally requires restricted-scope verification and a security assessment. Brand verification, scope verification, website Safe Browsing review and mobile store review are separate.
+The existing callback is already registered and tested. Additional Android/iOS OAuth clients require the actual native package/bundle identifiers and app-signing configuration; do not use the website callback as an invented native configuration.
+
+References
+https://support.google.com/cloud/answer/15549945
+https://developers.google.com/identity/protocols/oauth2/production-readiness/brand-verification
+https://developers.google.com/workspace/gmail/api/auth/scopes

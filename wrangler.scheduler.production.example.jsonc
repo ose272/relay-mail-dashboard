@@ -3,9 +3,14 @@
   "name": "relay-mail-sender-scheduler",
   "main": "src/send-scheduler.js",
   "compatibility_date": "2026-11-16",
-  "compatibility_flags": ["nodejs_compat"],
+  "compatibility_flags": [
+    "nodejs_compat"
+  ],
   "triggers": {
-    "crons": ["* * * * *"]
+    "crons": [
+      "* * * * *",
+      "0 * * * *"
+    ]
   },
   "vars": {
     "DASHBOARD_API_URL": "https://REPLACE-WITH-YOUR-PAGES-URL.pages.dev"

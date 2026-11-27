@@ -53,3 +53,12 @@ test('existing rolling usage counts and a mismatched workspace prevent dispatch'
  }finally{f.db.sqlite.close();}
  const g=await fixture();try{g.db.sqlite.exec("INSERT INTO auth_users(id,email,display_name,password_hash,created_at) VALUES('u2','u2@invalid.test','Two','test','2026-01-01');INSERT INTO auth_workspaces(id,owner_user_id,name,created_at) VALUES('w2','u2','Other','2026-01-01');UPDATE customer_test_deliveries SET workspace_id='w2'");assert.equal((await(await g.call()).json()).errorCode,'MAILBOX_NOT_READY');assert.equal(g.ctx.sends,0);}finally{g.db.sqlite.close();}
 });
+test('disconnecting and reconnecting a Google identity cannot reset its rolling quota',async()=>{
+ const f=await fixture();try{
+  const now=new Date().toISOString();
+  f.db.sqlite.prepare("INSERT INTO customer_test_deliveries(id,workspace_id,mailbox_id,recipient,capability_hash,expires_at,status,created_at,started_at,sent_at) VALUES(?,'w','m','r@invalid.test','unit','2099-01-01','sent',?,?,?)").run(crypto.randomUUID(),now,now,now);
+  f.db.sqlite.exec("UPDATE customer_google_mailboxes SET status='disconnected';INSERT INTO customer_google_mailboxes(id,workspace_id,google_sub,email,refresh_ciphertext,access_ciphertext,access_expires_at,granted_scopes,connected_at,updated_at,cap) SELECT 'm2',workspace_id,google_sub,email,refresh_ciphertext,access_ciphertext,access_expires_at,granted_scopes,connected_at,updated_at,1 FROM customer_google_mailboxes WHERE id='m'");
+  f.db.sqlite.prepare('UPDATE customer_test_deliveries SET mailbox_id=? WHERE id=?').run('m2',f.id);
+  assert.equal((await(await f.call()).json()).errorCode,'SENDER_CAPACITY');assert.equal(f.ctx.sends,0);
+ }finally{f.db.sqlite.close();}
+});

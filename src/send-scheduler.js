@@ -7,6 +7,11 @@ export default {
       return;
     }
     const baseUrl = env.DASHBOARD_API_URL.replace(/\/+$/, '');
+    if(_controller?.cron==='0 * * * *'){
+      const response=await fetch(`${baseUrl}/api/internal/privacy-cleanup`,{method:'POST',headers:{Authorization:`Bearer ${env.BACKGROUND_CRON_SECRET}`}});
+      if(!response.ok)console.error('Privacy cleanup did not confirm.');
+      return;
+    }
     let senderSlots=Array.from({length:concurrency},(_,slot)=>slot);
     try{
       const response=await fetch(`${baseUrl}/api/internal/prepare-tick`,{method:'POST',headers:{Authorization:`Bearer ${env.BACKGROUND_CRON_SECRET}`,Origin:baseUrl,'Content-Type':'application/json'},body:'{}'});
