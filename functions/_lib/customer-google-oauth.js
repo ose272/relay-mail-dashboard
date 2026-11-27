@@ -47,6 +47,7 @@ async function readBody(request){
 }
 async function activeCustomer(db,request){const customer=await customerSession(db,request);if(!customer)throw new OAuthError(401,'SIGN_IN_REQUIRED','Please sign in with your Sendar account.');return customer;}
 async function start(request,env,db,customer){
+ if(env.GOOGLE_MODIFY_REVIEW_EMAIL&&customer.email.toLowerCase()!==env.GOOGLE_MODIFY_REVIEW_EMAIL.toLowerCase())throw new OAuthError(403,'REVIEW_TEST_ONLY','The new Gmail permissions are currently available only to the designated review test account.');
  if(!configured(env))throw new OAuthError(503,'OAUTH_NOT_CONFIGURED','Google connection is not configured yet.');
  const canonical=origin(env);if(new URL(request.url).origin!==canonical)throw new OAuthError(400,'USE_CUSTOM_DOMAIN','Connect Google from '+canonical+'.');
  const stamp=new Date(),expires=new Date(+stamp+600000).toISOString(),old=new Date(+stamp-600000).toISOString();
@@ -78,6 +79,7 @@ async function callback(request,env,db,customer,fetcher){
   const tokens=await providerJson(fetcher,'https://oauth2.googleapis.com/token',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:new URLSearchParams({client_id:env.GOOGLE_CLIENT_ID,client_secret:env.GOOGLE_CLIENT_SECRET,code,code_verifier:verifier,redirect_uri:origin(env)+callbackPath,grant_type:'authorization_code'})});
   stage='identity_validation';
   const identity=await verifyGoogleIdentity(tokens.id_token,{clientId:env.GOOGLE_CLIENT_ID,nonceHash:saved.nonce_hash,fetcher});
+  if(env.GOOGLE_MODIFY_REVIEW_EMAIL&&identity.email!==env.GOOGLE_MODIFY_REVIEW_EMAIL.toLowerCase())return destination(env,'review_user_only');
   const scopes=typeof tokens.scope==='string'?tokens.scope.split(/\s+/):[];
   if(gmailScopes.some(scope=>!scopes.includes(scope)))return destination(env,'permissions');
   if(typeof tokens.access_token!=='string'||!tokens.access_token||tokens.access_token.length>16000)return destination(env,'failed');

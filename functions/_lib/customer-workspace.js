@@ -1,3 +1,4 @@
+import {customerThreads,syncCustomerMailbox,updateCustomerThread,MailError} from './customer-gmail-inbox.js';
 import {customerSession,readCustomerCookie} from './customer-auth.js';
 import {deleteCustomerWorkspace} from './delete-customer-workspace.js';
 import {customerGoogleOAuth} from './customer-google-oauth.js';
@@ -11,18 +12,18 @@ const required=(value,max=100)=>{if(typeof value!=='string'||!value.trim()||valu
 const optional=(value,max)=>{if(value===undefined)return '';if(typeof value!=='string'||value.length>max)throw new WorkspaceError(400,'A field is too long.');return value;};
 async function state(db,user,url){
  const ws=user.workspace_id,settings=Object.fromEntries((await db.prepare('SELECT key,value FROM customer_workspace_settings WHERE workspace_id=?').bind(ws).all()).results.map(r=>[r.key,r.value]));
- const mailboxes=(await db.prepare("SELECT id,email,google_sub,status,checked_at,last_check_status,connected_at,cap,paused FROM customer_google_mailboxes WHERE workspace_id=? AND status<>'disconnected' ORDER BY connected_at DESC LIMIT 1000").bind(ws).all()).results;
+ const mailboxes=(await db.prepare("SELECT id,email,google_sub,status,checked_at,last_check_status,connected_at,last_sync_at,cap,paused FROM customer_google_mailboxes WHERE workspace_id=? AND status<>'disconnected' ORDER BY connected_at DESC LIMIT 1000").bind(ws).all()).results;
  const cutoff=new Date(Date.now()-SEND_WINDOW_MS).toISOString();
  const usage=(await db.prepare("SELECT m.google_sub,COUNT(*) AS used FROM customer_test_deliveries d JOIN customer_google_mailboxes m ON m.id=d.mailbox_id WHERE d.workspace_id=? AND d.status IN('sending','sent','uncertain') AND d.started_at>? GROUP BY m.google_sub").bind(ws,cutoff).all()).results;
  const hashes=await Promise.all(mailboxes.map(r=>digest(r.email.toLowerCase()))),retainedUsage=new Map();
  for(let i=0;i<hashes.length;i+=80){const chunk=hashes.slice(i,i+80),rows=(await db.prepare('SELECT sender_hash,COUNT(*) AS total FROM customer_retained_send_usage WHERE sender_hash IN('+chunk.map(()=>'?').join(',')+') AND used_at>? GROUP BY sender_hash').bind(...chunk,cutoff).all()).results;for(const r of rows)retainedUsage.set(r.sender_hash,Number(r.total));}
- const accounts=mailboxes.map((row,i)=>({id:row.id,email:row.email,cap:row.cap,used:Number(usage.find(u=>u.google_sub===row.google_sub)?.used||0)+(retainedUsage.get(hashes[i])||0),paused:!!row.paused,connection:row.status==='connected'?'Connected':'Reconnect required',hasCredentials:row.status==='connected',healthStatus:row.last_check_status==='ok'?'Healthy':row.status==='reconnect_required'?'Needs attention':'Unknown',healthCheckedAt:row.checked_at,healthMessage:row.status==='reconnect_required'?'Reconnect this mailbox to restore access.':'',lastSyncAt:null}));
+ const accounts=mailboxes.map((row,i)=>({id:row.id,email:row.email,cap:row.cap,used:Number(usage.find(u=>u.google_sub===row.google_sub)?.used||0)+(retainedUsage.get(hashes[i])||0),paused:!!row.paused,connection:row.status==='connected'?'Connected':'Reconnect required',hasCredentials:row.status==='connected',healthStatus:row.last_check_status==='ok'?'Healthy':row.status==='reconnect_required'?'Needs attention':'Unknown',healthCheckedAt:row.checked_at,healthMessage:row.status==='reconnect_required'?'Reconnect this mailbox to restore access.':'',lastSyncAt:row.last_sync_at}));
 
  const templates=(await db.prepare('SELECT id,name,subject,body,description,archived_at AS archivedAt FROM customer_plans WHERE workspace_id=? ORDER BY created_at DESC,id LIMIT 1000').bind(ws).all()).results;
  const cursor=url.searchParams.get('leadCursor');const leads=(await db.prepare('SELECT id,email,name,store,status FROM customer_leads WHERE workspace_id=? '+(cursor?'AND id>? ':'')+'ORDER BY id LIMIT 101').bind(ws,...(cursor?[cursor]:[])).all()).results;
  const count=await db.prepare('SELECT COUNT(*) AS active FROM customer_leads WHERE workspace_id=?').bind(ws).first();
  const batches=(await db.prepare('SELECT id,file_name AS fileName,created_at AS createdAt,imported_count AS importedCount,duplicate_count AS duplicateCount,invalid_count AS invalidCount,status,(SELECT COUNT(*) FROM customer_leads l WHERE l.workspace_id=b.workspace_id AND l.batch_id=b.id) AS leadCount FROM customer_lead_batches b WHERE workspace_id=? ORDER BY created_at DESC LIMIT 100').bind(ws).all()).results;
- return {customerWorkspace:true,capabilities:{campaignSending:false,inbox:false},workspaceName:user.workspace_name,profileName:user.display_name,cap:Number(settings.cap||40),includeSpamFolders:settings.includeSpamFolders==='true',openTracking:false,linkTracking:false,healthNotificationEmail:settings.healthNotificationEmail||'',accounts,templates,campaigns:[],threads:[],healthEvents:[],leadImportBatches:batches,leads:leads.slice(0,100),leadCounts:{active:count.active,archived:0},leadPage:{hasMore:leads.length>100,nextCursor:leads.length>100?leads[99].id:null}};
+ return {customerWorkspace:true,capabilities:{campaignSending:false,inbox:true,moveToTrash:true,replies:false},workspaceName:user.workspace_name,profileName:user.display_name,cap:Number(settings.cap||40),includeSpamFolders:settings.includeSpamFolders==='true',openTracking:false,linkTracking:false,healthNotificationEmail:settings.healthNotificationEmail||'',accounts,templates,campaigns:[],threads:await customerThreads(db,ws),healthEvents:[],leadImportBatches:batches,leads:leads.slice(0,100),leadCounts:{active:count.active,archived:0},leadPage:{hasMore:leads.length>100,nextCursor:leads.length>100?leads[99].id:null}};
 }
 async function importLeads(db,user,body,flush){
  const text=optional(body.text,2000000),name=required(body.fileName,200),parsed=parseLeads(text);
@@ -54,6 +55,9 @@ export async function customerWorkspace({request,env,fetcher=fetch}){
   meter=meteredD1(env.DB,initial,budgets);const db=meter.db,ws=user.workspace_id;
   let body={};if(write){const raw=await request.text();if(raw.length>2100000)throw new WorkspaceError(413,'Request too large.');try{body=JSON.parse(raw);}catch{throw new WorkspaceError(400,'Invalid request.');}if(!body||typeof body!=='object'||Array.isArray(body))throw new WorkspaceError(400,'Invalid request.');}
   if(path==='state'&&!write)return json(200,await state(db,user,url));
+  if(path==='thread'&&!write){const id=required(url.searchParams.get('id')),rows=await customerThreads(db,ws,id);if(!rows.length)throw new WorkspaceError(404,'Conversation not found.');return json(200,{thread:rows[0]});}
+  if(path==='thread/update'&&write)return json(200,await updateCustomerThread({env,db,user,body,fetcher}));
+  if(path==='mail/sync'&&write)return json(200,await syncCustomerMailbox({env,db,user,body,fetcher}));
   if(path==='account/delete'&&write){
    if(body.confirmation!=='DELETE')throw new WorkspaceError(400,'Type DELETE to confirm account deletion.');
    const session=await db.prepare('SELECT created_at FROM auth_sessions WHERE token_hash=? AND user_id=?').bind(await digest(readCustomerCookie(request)),user.id).first();
@@ -92,6 +96,6 @@ export async function customerWorkspace({request,env,fetcher=fetch}){
   if(['account/cap','account/pause','account'].includes(path)&&write){const id=required(body.id);if(path==='account/cap'&&(!Number.isInteger(body.cap)||body.cap<1||body.cap>40))throw new WorkspaceError(400,'Cap must be between 1 and 40.');if(path!=='account/cap'&&typeof body.paused!=='boolean')throw new WorkspaceError(400,'Invalid pause preference.');const r=await db.prepare('UPDATE customer_google_mailboxes SET '+(path==='account/cap'?'cap':'paused')+'=? WHERE id=? AND workspace_id=?').bind(path==='account/cap'?body.cap:Number(body.paused),id,ws).run();if(!r.meta?.changes)throw new WorkspaceError(404,'Mailbox not found.');return json(200,{ok:true});}
   if(['sending/start','campaign/prepare','campaign/resume-pending','mail/sync','reply'].includes(path))throw new WorkspaceError(409,'Customer campaign sending and inbox sync are not enabled yet. No email was sent.');
   return json(404,{error:'Not found in your workspace.'});
- }catch(e){return json(e instanceof WorkspaceError?e.status:503,{error:e instanceof WorkspaceError?e.message:'Workspace request could not complete. Retry shortly.'});}
+ }catch(e){return json(e instanceof WorkspaceError||e instanceof MailError?e.status:503,{error:e instanceof WorkspaceError||e instanceof MailError?e.message:'Workspace request could not complete. Retry shortly.'});}
  finally{if(meter&&!streaming)await meter.flush(day).catch(()=>{});}
 }

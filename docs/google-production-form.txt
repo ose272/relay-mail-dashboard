@@ -26,19 +26,21 @@ Data access
 Identity login requests only openid, email, profile (Google console may list equivalent userinfo.email and userinfo.profile URIs).
 Optional mailbox connection requests:
 https://www.googleapis.com/auth/gmail.send
-https://www.googleapis.com/auth/gmail.readonly
-Do not add full https://mail.google.com/ or gmail.modify; current implementation does not need those permissions.
+https://www.googleapis.com/auth/gmail.modify
+Do not add full https://mail.google.com/, gmail.messages.delete or gmail.readonly. Modify includes reading and supports confirmed Trash/read/archive actions.
 
 Draft functional explanation, to use only after the customer features are complete:
-Sendar is an email outreach and conversation workspace. Users sign into their Sendar account using Google identity or a separate Sendar password. Connecting a Google mailbox is an additional user-authorized action. Sending permission allows the app to send messages the user composes or explicitly schedules. Read-only Gmail permission supports showing replies, Sent-folder conversations and user-selected Spam-folder replies. Sendar does not require permission to modify or permanently delete Gmail messages.
+Sendar is an email outreach and conversation workspace. Users sign into their Sendar account using Google identity or a separate Sendar password. Connecting a Google mailbox is an additional user-authorized action. Sending permission allows the app to send messages the user composes or explicitly schedules. Gmail modification permission supports showing conversations, updating read status, archiving and moving selected conversations to Trash after confirmation. Sendar does not permanently delete Gmail messages.
 
 Do not state that customer campaigns or inbox sync are complete in the verification submission yet. These integrations remain gated in the customer workspace. Demonstration video must show the actual completed flows, consent screen, requested scopes and correct domain.
 
 Review gates
-gmail.send is sensitive; gmail.readonly is restricted. Server access to restricted Gmail data generally requires restricted-scope verification and a security assessment. Brand verification, scope verification, website Safe Browsing review and mobile store review are separate.
+gmail.send is sensitive; gmail.modify is restricted. Server access to restricted Gmail data generally requires restricted-scope verification and a security assessment. Brand verification, scope verification, website Safe Browsing review and mobile store review are separate.
 The existing callback is already registered and tested. Additional Android/iOS OAuth clients require the actual native package/bundle identifiers and app-signing configuration; do not use the website callback as an invented native configuration.
 
 References
 https://support.google.com/cloud/answer/15549945
 https://developers.google.com/identity/protocols/oauth2/production-readiness/brand-verification
 https://developers.google.com/workspace/gmail/api/auth/scopes
+
+Updated scope and review instructions: see docs/google-modify-verification.txt. Customer inbox sync and read/archive/Trash actions are now implemented for the designated review account; campaign sending and dashboard replies remain gated.

@@ -12,6 +12,7 @@ export async function deleteCustomerWorkspace(db,user){
   db.prepare('DELETE FROM customer_google_oauth_states WHERE workspace_id=?').bind(ws),
   db.prepare('DELETE FROM customer_google_oauth_errors WHERE workspace_id=?').bind(ws),
   db.prepare('DELETE FROM customer_test_deliveries WHERE workspace_id=?').bind(ws),
+  db.prepare('DELETE FROM customer_mail_threads WHERE workspace_id=?').bind(ws),
   db.prepare('DELETE FROM customer_google_mailboxes WHERE workspace_id=?').bind(ws),
   db.prepare('DELETE FROM customer_leads WHERE workspace_id=?').bind(ws),
   db.prepare('DELETE FROM customer_lead_batches WHERE workspace_id=?').bind(ws),

@@ -1,0 +1,43 @@
+Sendar Gmail verification preparation - 27 November 2026
+
+Status: NOT SUBMITTED. Branding was verified and published by the owner. Data-access verification remains separate.
+
+Configured scope set:
+openid
+https://www.googleapis.com/auth/userinfo.email
+https://www.googleapis.com/auth/userinfo.profile
+https://www.googleapis.com/auth/gmail.send
+https://www.googleapis.com/auth/gmail.modify
+
+Remove gmail.readonly, gmail.messages.delete and full mail.google.com from the requested scope list. Modification includes reading; Sendar has no permanent Gmail deletion endpoint.
+
+Review testing is restricted to the Sendar login AND connected Google mailbox support.sendar@gmail.com through GOOGLE_MODIFY_REVIEW_EMAIL. General users cannot start the new unverified mailbox grant. Do not remove this restriction before verification approval and full customer mail readiness.
+
+Completed review flow:
+1. Create/sign into Sendar using support.sendar@gmail.com. Google identity login is separate and requests only openid/email/profile.
+2. Open Accounts > Connect Google mailbox. Select support.sendar@gmail.com. Existing connections require a new consent attempt for gmail.modify.
+3. Show Google's full consent screen and any unverified-app notice in the recording. Show the app name and all requested scopes without exposing passwords, codes, tokens or client secrets.
+4. Open Inbox > Sync inbox. Include Gmail/mobile replies. The current sync imports up to 20 recent Gmail conversations per mailbox invocation; repeated manual sync continues the stored page cursor when more conversations exist. The displayed reply window is rolling 24 hours; conversation context may include older messages.
+5. Open a harmless test conversation containing messages in both directions. Show read status reflected in Gmail. Demonstrate Archive/Unarchive if needed.
+6. Select Move to Trash. Show the confirmation and that Cancel keeps the conversation. Confirm on an explicitly chosen test conversation and show Gmail Trash. This affects the whole conversation and does not permanently delete it. The owner should prepare a harmless review-test conversation rather than using a customer's actual email.
+7. Show Accounts > Disconnect; saved access is removed and revocation is attempted. Show the privacy policy, support contact and Settings > Delete account path.
+
+Do not submit this partial flow as proof that campaign sending or dashboard replies work. Those customer features remain gated and must be completed and shown before submitting the gmail.send justification for campaigns/replies. The earlier two test sends verified Google sending transport only.
+
+Proposed restricted-scope justification, subject to completed feature verification:
+Sendar uses gmail.modify to display recent mailbox conversations, including Sent-folder context and optional Spam replies, update message read status, archive or unarchive conversations, and move a user-selected conversation to Trash after confirmation. Reading full message bodies is needed for conversation context. Readonly cannot perform user-requested label or Trash operations and metadata-only access cannot display conversation bodies. Sendar does not permanently delete Gmail messages.
+
+Submission requirements still outstanding:
+- Actual owner-authorized Google consent and live feature check after deployment.
+- Customer campaign sending and dashboard replies integration, if requesting review for those claimed features.
+- A real demonstration video (unlisted YouTube link) including all OAuth clients in this Cloud project. No video has been recorded or uploaded by this agent.
+- Google Verification Center submission through the owner's authenticated Cloud Console; this agent has no authenticated Cloud Console browser or connector to submit it.
+- Restricted-scope security assessment if required by Google's review for server-processed Gmail data. Do not represent this as already completed.
+
+Public links:
+https://sendar.com.de/
+https://sendar.com.de/privacy
+https://sendar.com.de/terms
+https://sendar.com.de/delete-account
+Support: support.sendar@gmail.com
+Callback: https://sendar.com.de/api/oauth/google/callback
