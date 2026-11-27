@@ -105,7 +105,7 @@ async function ownedMailbox(db,customer,id){
  const row=await db.prepare("SELECT * FROM customer_google_mailboxes WHERE id=? AND workspace_id=? AND status<>'disconnected'").bind(id,customer.workspace_id).first();
  if(!row)throw new OAuthError(404,'MAILBOX_NOT_FOUND','Mailbox not found.');return row;
 }
-async function refreshAccess(env,db,row,fetcher){
+export async function refreshAccess(env,db,row,fetcher){
  const refresh=await decryptCredential(tokenContext(row),row.refresh_ciphertext,env.GOOGLE_OAUTH_ENCRYPTION_KEY);
  let tokens;try{tokens=await providerJson(fetcher,'https://oauth2.googleapis.com/token',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:new URLSearchParams({client_id:env.GOOGLE_CLIENT_ID,client_secret:env.GOOGLE_CLIENT_SECRET,refresh_token:refresh,grant_type:'refresh_token'})});}
  catch(error){if(error.providerCode==='invalid_grant')await db.prepare("UPDATE customer_google_mailboxes SET status='reconnect_required',last_check_status='authorization_expired' WHERE id=? AND workspace_id=?").bind(row.id,row.workspace_id).run();throw new OAuthError(502,'GOOGLE_REFRESH_FAILED',error.providerCode==='invalid_grant'?'Google authorization expired or was revoked. Reconnect this mailbox.':'Google authorization could not be refreshed. Retry later; no mail was sent.');}

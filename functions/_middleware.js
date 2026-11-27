@@ -15,6 +15,8 @@ export async function onRequest({ request, env, next }) {
   const url = new URL(request.url);
   // OAuth endpoints validate the customer session themselves. Owner cookies never authorize them.
   if(url.pathname.startsWith('/api/oauth/google/'))return next();
+  // Recipient-bound operator jobs authenticate a short-lived capability themselves.
+  if(url.pathname==='/api/internal/customer-test-send')return next();
   if(['GET','HEAD'].includes(request.method)&&url.pathname.replace(/\/$/,'')==='/sendar/signin'&&url.searchParams.get('access')==='administrator')return Response.redirect(new URL('/sendar/signin',url),302);
   const legacy={'/':'/sendar/','/index.html':'/sendar/','/login':'/sendar/signin','/login.html':'/sendar/signin','/signin':'/sendar/signin','/signin.html':'/sendar/signin','/signup':'/sendar/signup','/signup.html':'/sendar/signup','/welcome':'/sendar/welcome','/welcome.html':'/sendar/welcome','/about':'/sendar/about','/about.html':'/sendar/about','/sendar/design':'/sendar/','/sendar/design/':'/sendar/'};
   if(['GET','HEAD'].includes(request.method)&&legacy[url.pathname])return Response.redirect(new URL(legacy[url.pathname],url),302);
