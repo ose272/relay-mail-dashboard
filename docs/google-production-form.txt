@@ -32,7 +32,7 @@ Do not add full https://mail.google.com/, gmail.messages.delete or gmail.readonl
 Draft functional explanation, to use only after the customer features are complete:
 Sendar is an email outreach and conversation workspace. Users sign into their Sendar account using Google identity or a separate Sendar password. Connecting a Google mailbox is an additional user-authorized action. Sending permission allows the app to send messages the user composes or explicitly schedules. Gmail modification permission supports showing conversations, updating read status, archiving and moving selected conversations to Trash after confirmation. Sendar does not permanently delete Gmail messages.
 
-Do not state that customer campaigns or inbox sync are complete in the verification submission yet. These integrations remain gated in the customer workspace. Demonstration video must show the actual completed flows, consent screen, requested scopes and correct domain.
+Customer inbox sync, campaign sending and dashboard replies are implemented for controlled review testing. The owner must complete the live test and record the actual flows, consent screen, requested scopes and correct domain before submission.
 
 Review gates
 gmail.send is sensitive; gmail.modify is restricted. Server access to restricted Gmail data generally requires restricted-scope verification and a security assessment. Brand verification, scope verification, website Safe Browsing review and mobile store review are separate.
@@ -43,4 +43,4 @@ https://support.google.com/cloud/answer/15549945
 https://developers.google.com/identity/protocols/oauth2/production-readiness/brand-verification
 https://developers.google.com/workspace/gmail/api/auth/scopes
 
-Updated scope and review instructions: see docs/google-modify-verification.txt. Customer inbox sync and read/archive/Trash actions are now implemented for the designated review account; campaign sending and dashboard replies remain gated.
+Updated scope and review instructions: see docs/google-modify-verification.txt. Customer inbox sync and read/archive/Trash actions are now implemented for the designated review account; campaign sending and dashboard replies are also implemented, pending owner-authorized live testing and video.

@@ -34,7 +34,7 @@ export async function onRequest({ request, env, next }) {
     url.pathname === '/api/login'
   ) return next();
   if (
-    ['/api/internal/send-tick','/api/internal/prepare-tick','/api/internal/privacy-cleanup'].includes(url.pathname) &&
+    ['/api/internal/send-tick','/api/internal/prepare-tick','/api/internal/privacy-cleanup','/api/internal/customer-send-tick'].includes(url.pathname) &&
     env.BACKGROUND_CRON_SECRET &&
     request.headers.get('Authorization') === `Bearer ${env.BACKGROUND_CRON_SECRET}`
   ) return next();

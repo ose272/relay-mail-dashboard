@@ -14,6 +14,15 @@ export default {
     }
     let senderSlots=Array.from({length:concurrency},(_,slot)=>slot);
     try{
+      let customerRemaining=200;
+      for(let batch=0;batch<10&&customerRemaining>0;batch++){
+        const response=await fetch(`${baseUrl}/api/internal/customer-send-tick`,{method:'POST',headers:{Authorization:`Bearer ${env.BACKGROUND_CRON_SECRET}`,'Content-Type':'application/json'},body:JSON.stringify({limit:Math.min(20,customerRemaining)})});
+        if(!response.ok){console.error('Customer send tick did not confirm; queued work remains saved.');break;}
+        const result=await response.json();customerRemaining-=Number(result.attempted||0);
+        if(!result.hasMore||!result.attempted)break;
+      }
+    }catch{console.error('Customer send tick response was not confirmed; no delivery is force-retried.');}
+    try{
       const response=await fetch(`${baseUrl}/api/internal/prepare-tick`,{method:'POST',headers:{Authorization:`Bearer ${env.BACKGROUND_CRON_SECRET}`,Origin:baseUrl,'Content-Type':'application/json'},body:'{}'});
       const progress=await response.json();
       if(!response.ok || progress.preparing || progress.dispatchReady!==true)return;

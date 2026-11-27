@@ -1,6 +1,6 @@
 const encoder=new TextEncoder();
 export const googleScopes=['openid','email','https://www.googleapis.com/auth/gmail.modify','https://www.googleapis.com/auth/gmail.send'];
-export const base64url=bytes=>btoa(String.fromCharCode(...new Uint8Array(bytes))).replaceAll('+','-').replaceAll('/','_').replace(/=+$/,'');
+export const base64url=bytes=>{const data=new Uint8Array(bytes),chunks=[];for(let i=0;i<data.length;i+=16384)chunks.push(String.fromCharCode(...data.subarray(i,i+16384)));return btoa(chunks.join('')).replaceAll('+','-').replaceAll('/','_').replace(/=+$/,'');};
 export const randomToken=()=>base64url(crypto.getRandomValues(new Uint8Array(32)));
 export const digest=async value=>Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256',encoder.encode(value))),b=>b.toString(16).padStart(2,'0')).join('');
 export const pkceChallenge=async verifier=>base64url(await crypto.subtle.digest('SHA-256',encoder.encode(verifier)));

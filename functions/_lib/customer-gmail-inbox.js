@@ -12,7 +12,7 @@ export async function mailboxAccess(env,db,workspaceId,mailboxId,fetcher=fetch,n
  if(!scopes.includes(modify)&&!scopes.includes('https://www.googleapis.com/auth/gmail.readonly'))throw new MailError(409,'Reconnect this mailbox to grant Gmail read access.');
  let access=Date.parse(row.access_expires_at)>Date.now()+60000?await decryptCredential('google-mailbox:'+row.workspace_id+':'+row.google_sub,row.access_ciphertext,env.GOOGLE_OAUTH_ENCRYPTION_KEY):await refreshAccess(env,db,row,fetcher);
  const call=async(path,init={})=>{
-  if(!path.startsWith('threads')&&!path.startsWith('profile'))throw new MailError(400,'Unsupported Gmail operation.');
+  if(!path.startsWith('threads')&&!path.startsWith('profile')&&path!=='messages/send')throw new MailError(400,'Unsupported Gmail operation.');
   const perform=()=>providerJson(fetcher,'https://gmail.googleapis.com/gmail/v1/users/me/'+path,{...init,headers:{...(init.headers||{}),Authorization:'Bearer '+access}});
   // A read may refresh once. Mutations never automatically repeat after dispatch.
   try{return await perform();}catch(e){if((init.method||'GET')==='GET'&&e.status===401){access=await refreshAccess(env,db,row,fetcher);return perform();}throw e;}
@@ -34,6 +34,15 @@ export function normalizeGmailThread(thread,mailboxEmail){
  const last=messages.at(-1);return {providerId:thread.id,email:latest.senderEmail,name:latest.senderEmail,subject:messages.find(m=>m.subject)?.subject||'',inboundAt:latest.time,unread:latest.unread&&!(last.direction==='out'&&last.time>=latest.time),archived:!messages.some(m=>m.inbox),trashed:messages.every(m=>m.trashed),starred:messages.some(m=>m.starred),messages};
 }
 export async function storeGmailThread(db,workspaceId,mailboxId,thread,mailboxEmail){
+ // Reconcile exact Message-IDs even in Sent-only threads, which have no incoming
+ // reply and therefore are intentionally absent from the reply inbox.
+ for(const message of thread.messages||[]){
+  const match=header(message,'message-id').match(/^<([a-f0-9-]{36})@sendar\.com\.de>$/),time=Number(message.internalDate);
+  if(match&&message.labelIds?.includes('SENT')&&address(header(message,'from'))===mailboxEmail&&Number.isFinite(time)){
+   await db.prepare("UPDATE customer_outbox SET status='sent',sent_at=?,provider_message_id=?,provider_thread_id=?,last_error=NULL WHERE id=? AND workspace_id=? AND mailbox_id=? AND recipient=? AND status='uncertain' AND started_at<=?").bind(new Date(time).toISOString(),message.id,thread.id,match[1],workspaceId,mailboxId,address(header(message,'to')),new Date(time+120000).toISOString()).run();
+  }
+ }
+ await db.prepare("UPDATE customer_campaigns SET status='Complete',next_send_at=NULL WHERE workspace_id=? AND status='Needs review' AND prepared_count>=planned_sends AND pending_count=0 AND in_flight=0 AND uncertain_count=0").bind(workspaceId).run();
  const data=normalizeGmailThread(thread,mailboxEmail);if(!data)return null;
  let prior=await db.prepare('SELECT id FROM customer_mail_threads WHERE mailbox_id=? AND provider_id=? AND workspace_id=?').bind(mailboxId,data.providerId,workspaceId).first();const id=prior?.id||crypto.randomUUID(),now=new Date().toISOString();
  await db.batch([
@@ -48,6 +57,10 @@ export async function customerThreads(db,workspaceId,id){
  const rows=(await db.prepare('SELECT t.id,t.mailbox_id AS accountId,t.email,t.name,t.subject,t.unread,t.archived,t.starred,t.tag,t.inbound_at AS inboundAt,m.id AS preview_id,m.sender_email AS preview_sender,m.direction AS preview_direction,m.body AS preview_body,m.sent_at AS preview_time FROM customer_mail_threads t LEFT JOIN customer_mail_messages m ON m.id=(SELECT last.id FROM customer_mail_messages last WHERE last.workspace_id=t.workspace_id AND last.thread_id=t.id ORDER BY last.sent_at DESC,last.id DESC LIMIT 1) WHERE t.workspace_id=? AND t.trashed=0 '+(id?'AND t.id=? ':'AND t.inbound_at>? ')+'ORDER BY t.inbound_at DESC,t.id LIMIT 100').bind(workspaceId,id||new Date(Date.now()-86400000).toISOString()).all()).results;
  for(const row of rows){row.messages=row.preview_id?[{id:row.preview_id,senderEmail:row.preview_sender,direction:row.preview_direction,body:row.preview_body,time:row.preview_time}]:[];for(const k of Object.keys(row))if(k.startsWith('preview_'))delete row[k];}
  if(id&&rows[0])rows[0].messages=(await db.prepare('SELECT id,sender_email AS senderEmail,direction,body,sent_at AS time FROM customer_mail_messages WHERE workspace_id=? AND thread_id=? ORDER BY sent_at DESC,id DESC LIMIT 200').bind(workspaceId,id).all()).results.reverse();
+ if(id&&rows[0]){
+  const pending=(await db.prepare("SELECT id,body,status AS sendState,created_at AS time FROM customer_outbox WHERE workspace_id=? AND thread_id=? AND status IN('queued','sending','uncertain','failed') ORDER BY created_at DESC LIMIT 5").bind(workspaceId,id).all()).results;
+  for(const p of pending)rows[0].messages.push({...p,direction:'out'});
+ }
  return rows;
 }
 export async function syncCustomerMailbox({env,db,user,body,fetcher=fetch}){

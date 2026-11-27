@@ -9,8 +9,8 @@ Implemented in this release:
 - The known test account is removed separately through a narrowly scoped operator action, preserving recent pseudonymous sending usage.
 
 Not a full public mail launch:
-- Customer campaign queues, background sending, inbox sync, reply actions and tracking are not connected yet. The existing administrator mail engine is intentionally not exposed to customers.
-- The dashboard marks these capabilities unavailable rather than showing mock campaigns or dispatching under another customer's identity.
+- Customer campaign queues, background sending, inbox sync and reply actions are implemented for controlled review testing. Live testing and Gmail data-access approval remain pending. Customer open/click tracking is not enabled. The administrator mail engine remains isolated.
+- Customer mail records are workspace-scoped. The designated review account restriction remains active for unverified Gmail permissions.
 - Public app description, privacy policy, terms, support.sendar@gmail.com contact and a self-service account-deletion flow are included. Customer mail functionality and Google review remain release gates.
 - Google restricted Gmail access requires its own approval; publishing status is not verification.
 
