@@ -129,7 +129,7 @@ async function checkMailbox(env,db,row,fetcher){
 async function disconnect(env,db,row,fetcher){
  let refresh='';try{if(row.refresh_ciphertext)refresh=await decryptCredential(tokenContext(row),row.refresh_ciphertext,env.GOOGLE_OAUTH_ENCRYPTION_KEY);}catch{}
  await db.prepare("UPDATE customer_google_mailboxes SET status='disconnected',refresh_ciphertext='',access_ciphertext='',updated_at=? WHERE id=? AND workspace_id=?").bind(new Date().toISOString(),row.id,row.workspace_id).run();
- let revoked=false;try{if(refresh){const response=await fetcher('https://oauth2.googleapis.com/revoke',{method:'POST',redirect:'error',signal:AbortSignal.timeout(20000),headers:{'Content-Type':'application/x-www-form-urlencoded'},body:new URLSearchParams({token:refresh})});revoked=response.ok;}}catch{}
+ let revoked=false;try{if(refresh){const response=await fetcher('https://oauth2.googleapis.com/revoke',{method:'POST',redirect:'manual',signal:AbortSignal.timeout(20000),headers:{'Content-Type':'application/x-www-form-urlencoded'},body:new URLSearchParams({token:refresh})});revoked=response.ok;}}catch{}
  return json(200,{ok:true,revoked,message:revoked?'Disconnected from Google.':'Disconnected locally. You can also remove Sendar access in your Google account to revoke the grant.'});
 }
 export async function customerGoogleOAuth({request,env,fetcher=fetch}){

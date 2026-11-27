@@ -43,3 +43,11 @@ The 153-test regression suite and isolated desktop/mobile checks passed. A new u
 Migration 0049 stores fixed callback-stage/error codes, numeric provider status and an opaque support reference for the customer workspace. It never stores provider payloads, authorization codes, OAuth state, email addresses or token/ciphertext data. Expired diagnostic rows are removed in bounded indexed batches. Generic callback failures now return actionable fixed messages and a reference; operators should inspect only these safe metadata fields, never dump OAuth-state or mailbox-token rows.
 
 Reference: https://developers.google.com/identity/openid-connect/openid-connect#an-id-tokens-payload
+
+## Cloudflare native-fetch correction — 27 November 2026
+
+A production diagnostic isolated the reported connection failure to token_exchange with provider status 0. An actual Workerd fetch probe reproduced the cause: redirect: "error" throws a TypeError before any outbound request because this runtime supports only "follow" and "manual". The earlier mocked provider tests did not exercise that native option validation.
+
+Provider requests now use "manual" and explicitly reject every 3xx response without following it, preserving the boundary against forwarding credentials. Google revocation also uses manual mode. Native Cloudflare-runtime verification now retrieves Google's public signing keys and receives an expected HTTP 400 for a deliberately invalid synthetic token request, proving that the transport reaches the provider. No real credentials were used in these transport probes.
+
+The 154-test suite passes, including a regression test that redirects are not followed and credentials are not forwarded. A fresh real-user consent attempt is required because prior one-use callback states were consumed. No test email was sent, and existing tokens, secrets, sender quotas and mail history were not changed.

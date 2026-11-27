@@ -7,7 +7,13 @@ export const pkceChallenge=async verifier=>base64url(await crypto.subtle.digest(
 const decode=value=>Uint8Array.from(atob(value.replaceAll('-','+').replaceAll('_','/').padEnd(Math.ceil(value.length/4)*4,'=')),c=>c.charCodeAt(0));
 const keyCache=new WeakMap();
 export async function providerJson(fetcher,url,init={}){
- const response=await fetcher(url,{...init,redirect:'error',signal:AbortSignal.timeout(20000)});
+ // Workerd supports "manual" and "follow", but rejects "error" before sending.
+ // Inspect redirects explicitly so provider credentials can never be forwarded.
+ const response=await fetcher(url,{...init,redirect:'manual',signal:AbortSignal.timeout(20000)});
+ if(response.status>=300&&response.status<400){
+  if(response.body)await response.body.cancel().catch(()=>{});
+  const error=new Error('Google provider redirect blocked.');error.status=response.status;error.providerCode='redirect_blocked';throw error;
+ }
  if(!response.ok){const error=new Error('Google request failed.');error.status=response.status;const body=await response.json().catch(()=>null);if(['invalid_grant','invalid_client','access_denied'].includes(body?.error))error.providerCode=body.error;throw error;}
  return response.json();
 }

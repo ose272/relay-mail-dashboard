@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {createTestDb} from '../scripts/test-d1.mjs';
 import {customerGoogleOAuth} from '../functions/_lib/customer-google-oauth.js';
-import {base64url,digest,googleScopes,pkceChallenge,verifyGoogleIdentity} from '../functions/_lib/google-identity.js';
+import {base64url,digest,googleScopes,pkceChallenge,providerJson,verifyGoogleIdentity} from '../functions/_lib/google-identity.js';
 import {onRequest as middleware} from '../functions/_middleware.js';
 
 const origin='https://sendar.invalid',encode=value=>base64url(new TextEncoder().encode(JSON.stringify(value)));
@@ -123,6 +123,13 @@ test('signed Google identity checks issuer, audience, nonce, expiry, verified em
  for(const value of ['false','TRUE',' true ',1,0,null,undefined])await assert.rejects(()=>signedIdentity({...claims,email_verified:value}).then(t=>verifyGoogleIdentity(t,options)));
  for(const change of [{iss:'https://attacker.invalid'},{aud:'other-client'},{nonce:'wrong'},{exp:now-1},{iat:now+1000},{email_verified:false},{email:'bad'}])await assert.rejects(()=>signedIdentity({...claims,...change}).then(t=>verifyGoogleIdentity(t,options)));
  const token=await signedIdentity(claims),parts=token.split('.');parts[1]=encode({...claims,email:'forged@invalid.test'});await assert.rejects(()=>verifyGoogleIdentity(parts.join('.'),options));await assert.rejects(()=>signedIdentity(claims,{alg:'none',kid:'unit-google-key'}).then(t=>verifyGoogleIdentity(t,options)));
+});
+
+test('Google requests use the Workerd-supported manual mode and reject redirects without forwarding credentials',async()=>{
+ let calls=0;
+ const fetcher=async(url,init)=>{calls++;assert.equal(url,'https://oauth2.googleapis.com/token');assert.equal(init.redirect,'manual');return Response.redirect('https://attacker.invalid/collect',302);};
+ await assert.rejects(()=>providerJson(fetcher,'https://oauth2.googleapis.com/token',{method:'POST',body:new URLSearchParams({client_secret:'unit-only-secret'})}),error=>error.status===302&&error.providerCode==='redirect_blocked');assert.equal(calls,1);
+ const data=await providerJson(async(url,init)=>{assert.equal(init.redirect,'manual');return Response.json({ok:true});},'https://www.googleapis.com/oauth2/v3/certs');assert.equal(data.ok,true);
 });
 
 test('public config contains no secrets and owner-disable middleware delegates only to self-authenticating OAuth handlers',async()=>{
